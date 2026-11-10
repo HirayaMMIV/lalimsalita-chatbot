@@ -1,7 +1,7 @@
+
 streamlit>=1.40,<2
-pypdf>=5,<7
-sentence-transformers>=3,<6
-langchain-text-splitters>=0.3,<2
-chromadb>=0.5,<2
-groq>=0.15,<1
 numpy>=1.26,<3
+onnxruntime>=1.19,<2
+transformers>=4.45,<5
+huggingface-hub>=0.26,<2
+groq>=0.15,<1
