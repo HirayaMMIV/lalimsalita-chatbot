@@ -1,43 +1,65 @@
 
-"""LalimSalita RAG backend with hybrid vocabulary retrieval."""
+"""
+LalimSalita RAG Backend
+
+PDF-based Filipino vocabulary question answering.
+
+Components:
+- pypdf for document extraction
+- RecursiveCharacterTextSplitter
+- multilingual-e5-small embeddings
+- ChromaDB cosine retrieval
+- Exact vocabulary matching
+- Groq for grounded Filipino responses
+"""
 
 import os
 import re
-from pathlib import Path
 from functools import lru_cache
+from pathlib import Path
 
-# ============================================================
-# 1. CONFIGURATION AND CACHE
-# ============================================================
-
+# Configure model caches before loading ML libraries.
 BASE = Path(__file__).resolve().parent
-
-PDF_PATH = BASE / "data" / "Talasalitaan Dataset (1).pdf"
-
 CACHE_DIR = BASE / "model_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Configure cache locations before importing ML libraries.
-os.environ["HF_HOME"] = str(CACHE_DIR / "huggingface")
-os.environ["HF_HUB_CACHE"] = str(CACHE_DIR / "huggingface" / "hub")
-os.environ["SENTENCE_TRANSFORMERS_HOME"] = str(
-    CACHE_DIR / "sentence_transformers"
+os.environ.setdefault(
+    "HF_HOME",
+    str(CACHE_DIR / "huggingface"),
 )
-os.environ["XDG_CACHE_HOME"] = str(CACHE_DIR)
-os.environ["TORCH_HOME"] = str(CACHE_DIR / "torch")
+os.environ.setdefault(
+    "SENTENCE_TRANSFORMERS_HOME",
+    str(CACHE_DIR / "sentence_transformers"),
+)
+os.environ.setdefault(
+    "XDG_CACHE_HOME",
+    str(CACHE_DIR),
+)
 
 import chromadb
 import numpy as np
+
 from groq import Groq
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import (
+    RecursiveCharacterTextSplitter,
+)
+
+
+# --------------------------------------------------
+# CONFIGURATION
+# --------------------------------------------------
+
+PDF_PATH = (
+    BASE / "data" / "Talasalitaan Dataset (1).pdf"
+)
 
 EMBED_MODEL = "intfloat/multilingual-e5-small"
 
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
-    "openai/gpt-oss-20b"
+    "openai/gpt-oss-20b",
 )
 
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "500"))
@@ -48,168 +70,221 @@ FALLBACK_ANSWER = (
     "Walang sapat na impormasyon sa ibinigay na dokumento."
 )
 
-SYSTEM_PROMPT = """
-You are LalimSalita, a Filipino vocabulary assistant.
+SYSTEM_PROMPT = f"""
+You are LalimSalita, a Filipino vocabulary learning assistant.
 
-Answer in Filipino using ONLY the provided PDF excerpts.
+You help students understand difficult Filipino vocabulary
+from the provided Talasalitaan PDF.
 
-Rules:
-1. Explain the meaning of the vocabulary term clearly.
-2. Use the DEFINITION and CONTEXTUAL_MEANING fields when available.
-3. Cite the PDF page number, for example (Pahina 5).
-4. Do not invent vocabulary definitions or references.
-5. If the retrieved excerpts do not support the answer, say exactly:
-Walang sapat na impormasyon sa ibinigay na dokumento.
+IMPORTANT RULES:
+
+1. Answer in clear, student-friendly Filipino.
+
+2. Use ONLY the retrieved document context.
+
+3. Use the DEFINITION and CONTEXTUAL_MEANING fields
+   whenever available.
+
+4. Explain vocabulary in a way appropriate for
+   Grade 8 students.
+
+5. Cite the supporting PDF page number using:
+   (Pahina X)
+
+6. Do not invent definitions, examples, or citations.
+
+7. Do not answer unrelated questions using outside knowledge.
+
+8. If the context does not contain sufficient evidence,
+   respond with exactly:
+
+{FALLBACK_ANSWER}
+
+9. A retrieved excerpt is not automatically relevant.
+   Verify that it actually supports the question.
+
+10. Keep answers understandable and reasonably concise.
 """
 
 
-# ============================================================
-# 2. PDF TEXT FORMATTING
-# ============================================================
+# --------------------------------------------------
+# DOCUMENT FORMATTING
+# --------------------------------------------------
+
+FIELDS = (
+    "WORD",
+    "PART_OF_SPEECH",
+    "DEFINITION",
+    "CONTEXTUAL_MEANING",
+    "STANZA",
+    "SOURCE",
+)
+
+WORD_PATTERN = re.compile(
+    r"(?im)^WORD:\s*([^\n]+)"
+)
+
 
 def format_vocabulary_text(raw_text):
-    """Normalize extracted vocabulary text."""
+    """
+    Restore vocabulary field boundaries after
+    extracting text from a PDF page.
+    """
 
-    text = re.sub(r"\s+", " ", raw_text or "").strip()
+    text = re.sub(
+        r"\s+",
+        " ",
+        raw_text or "",
+    ).strip()
 
     text = re.sub(
         r"\bARALIN\s+(\d+)\b",
         r"\n\nARALIN \1\n",
         text,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE,
     )
 
     text = re.sub(
         r"\bVOCABULARY\s+ENTRY\s+(\d+)\b",
         r"\n\nVOCABULARY ENTRY \1\n",
         text,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE,
     )
 
-    fields = (
-        "WORD",
-        "PART_OF_SPEECH",
-        "DEFINITION",
-        "CONTEXTUAL_MEANING",
-        "STANZA",
-        "SOURCE"
-    )
-
-    for field in fields:
+    for field in FIELDS:
         text = re.sub(
             rf"\s*\b({field})\s*:\s*",
             r"\n\1: ",
             text,
-            flags=re.IGNORECASE
+            flags=re.IGNORECASE,
         )
 
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = "\n".join(
+        line.strip()
+        for line in text.splitlines()
+    )
+
+    return re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text,
+    ).strip()
 
 
-# ============================================================
-# 3. PDF PROCESSING
-# ============================================================
+# --------------------------------------------------
+# PDF PROCESSING
+# --------------------------------------------------
 
 def process_pdf():
-
     if not PDF_PATH.is_file():
         raise FileNotFoundError(
-            f"PDF dataset not found: {PDF_PATH}"
+            f"Vocabulary PDF not found: {PDF_PATH}"
         )
 
     reader = PdfReader(str(PDF_PATH))
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP
+        chunk_overlap=CHUNK_OVERLAP,
+        separators=[
+            "\n\n",
+            "\n",
+            ". ",
+            " ",
+            "",
+        ],
     )
 
     chunks = []
     vocabulary_index = {}
 
-    for page_no, page in enumerate(reader.pages, start=1):
-
+    for page_number, page in enumerate(
+        reader.pages,
+        start=1,
+    ):
         try:
             raw_text = page.extract_text() or ""
         except Exception as exc:
             print(
-                f"Warning: Could not extract page "
-                f"{page_no}: {exc}"
+                f"Warning: page {page_number}: {exc}"
             )
             continue
 
-        cleaned_text = format_vocabulary_text(raw_text)
+        text = format_vocabulary_text(raw_text)
 
-        if not cleaned_text:
+        if not text:
             continue
 
-        page_chunks = splitter.split_text(cleaned_text)
+        page_chunks = splitter.split_text(text)
 
-        for chunk_index, chunk_text in enumerate(page_chunks):
+        for index, chunk_text in enumerate(page_chunks):
             chunks.append({
-                "id": f"p{page_no}_c{chunk_index}",
-                "page": page_no,
-                "text": chunk_text
+                "id": f"p{page_number}_c{index}",
+                "page": page_number,
+                "text": chunk_text,
             })
 
-        # Extract complete vocabulary entries for
-        # exact headword matching.
-        entries = re.split(
-            r"(?im)(?=^VOCABULARY ENTRY[ \t]+\d+[ \t]*$)",
-            cleaned_text
+        # Extract headwords from the normalized page.
+        # Store the complete entry where possible.
+        entry_sections = re.split(
+            r"(?im)(?=^VOCABULARY ENTRY\s+\d+\s*$)",
+            text,
         )
 
-        for entry in entries:
-
-            match = re.search(
-                r"(?im)^WORD:[ \t]*([^\n]+)",
-                entry
-            )
+        for entry in entry_sections:
+            match = WORD_PATTERN.search(entry)
 
             if not match:
                 continue
 
-            word = match.group(1).strip().lower()
+            word = match.group(1).strip().casefold()
 
-            if word:
-                vocabulary_index.setdefault(
-                    word, []
-                ).append({
-                    "page": page_no,
-                    "text": entry.strip()
-                })
+            if not word:
+                continue
+
+            vocabulary_index.setdefault(
+                word,
+                [],
+            ).append({
+                "page": page_number,
+                "text": entry.strip(),
+            })
 
     if not chunks:
         raise ValueError(
-            "No extractable vocabulary text found in the PDF. "
-            "Check that the PDF is valid and contains "
-            "selectable text."
+            "The PDF contains no extractable text."
         )
 
-    print("\n========== DOCUMENT PROCESSING ==========")
+    print("========== LALIMSALITA ==========")
     print(f"PDF: {PDF_PATH.name}")
-    print(f"PDF pages: {len(reader.pages)}")
+    print(f"Pages: {len(reader.pages)}")
     print(f"Chunk size: {CHUNK_SIZE}")
     print(f"Chunk overlap: {CHUNK_OVERLAP}")
-    print(f"Total semantic chunks: {len(chunks)}")
-    print(f"Indexed vocabulary words: {len(vocabulary_index)}")
-    print("=========================================\n")
+    print(f"Total chunks: {len(chunks)}")
+    print(f"Vocabulary terms: {len(vocabulary_index)}")
+    print("=================================")
 
     return chunks, vocabulary_index
 
 
-# ============================================================
-# 4. EMBEDDINGS AND CHROMADB
-# ============================================================
+# --------------------------------------------------
+# EMBEDDING MODEL AND VECTOR DATABASE
+# --------------------------------------------------
 
 @lru_cache(maxsize=1)
 def load_pipeline():
+    """
+    Initialize the embedding model and build
+    the in-memory vector index once per process.
+    """
 
     print("Initializing LalimSalita RAG pipeline...")
 
     encoder = SentenceTransformer(
         EMBED_MODEL,
-        cache_folder=str(CACHE_DIR / "sentence_transformers")
+        cache_folder=str(
+            CACHE_DIR / "sentence_transformers"
+        ),
     )
 
     chunks, vocabulary_index = process_pdf()
@@ -218,11 +293,13 @@ def load_pipeline():
 
     collection = client.create_collection(
         name="lalimsalita_live",
-        metadata={"hnsw:space": "cosine"}
+        metadata={
+            "hnsw:space": "cosine"
+        },
     )
 
+    # Insert embeddings in manageable batches.
     for start in range(0, len(chunks), 100):
-
         batch = chunks[start:start + 100]
 
         passages = [
@@ -234,35 +311,46 @@ def load_pipeline():
             passages,
             normalize_embeddings=True,
             batch_size=32,
-            show_progress_bar=False
+            show_progress_bar=False,
         )
 
         collection.add(
-            ids=[item["id"] for item in batch],
-            documents=[item["text"] for item in batch],
+            ids=[
+                item["id"]
+                for item in batch
+            ],
+            documents=[
+                item["text"]
+                for item in batch
+            ],
             metadatas=[
                 {"page": item["page"]}
                 for item in batch
             ],
-            embeddings=vectors.tolist()
+            embeddings=vectors.tolist(),
         )
 
-    print(f"Indexed ChromaDB chunks: {collection.count()}")
-    print("LalimSalita pipeline initialized successfully.")
+    print(
+        f"Indexed ChromaDB chunks: {collection.count()}"
+    )
 
     return encoder, collection, vocabulary_index
 
 
-# ============================================================
-# 5. EXACT VOCABULARY MATCHING
-# ============================================================
+# --------------------------------------------------
+# EXACT VOCABULARY MATCHING
+# --------------------------------------------------
 
 def find_exact_vocabulary(question, vocabulary_index):
+    """
+    Find headwords explicitly mentioned in the
+    student's question.
+    """
 
-    question_normalized = re.sub(
+    normalized_question = re.sub(
         r"\s+",
         " ",
-        question.lower()
+        question.casefold(),
     ).strip()
 
     matches = []
@@ -270,108 +358,117 @@ def find_exact_vocabulary(question, vocabulary_index):
     for word in sorted(
         vocabulary_index.keys(),
         key=len,
-        reverse=True
+        reverse=True,
     ):
-
         pattern = (
             r"(?<!\w)"
             + re.escape(word)
             + r"(?!\w)"
         )
 
-        if re.search(pattern, question_normalized):
+        if not re.search(pattern, normalized_question):
+            continue
 
-            for entry in vocabulary_index[word]:
-                matches.append({
-                    "page": entry["page"],
-                    "text": entry["text"],
-                    "match_type": "exact"
-                })
+        for entry in vocabulary_index[word]:
+            matches.append({
+                "page": entry["page"],
+                "text": entry["text"],
+                "match_type": "exact",
+                "matched_word": word,
+            })
 
     return matches
 
 
-# ============================================================
-# 6. HYBRID RETRIEVAL
-# ============================================================
+# --------------------------------------------------
+# HYBRID RETRIEVAL
+# --------------------------------------------------
 
 def retrieve(question):
-
-    encoder, collection, vocabulary_index = load_pipeline()
+    encoder, collection, vocabulary_index = (
+        load_pipeline()
+    )
 
     query_vector = encoder.encode(
         ["query: " + question],
         normalize_embeddings=True,
-        show_progress_bar=False
-    )[0].tolist()
+        show_progress_bar=False,
+    )[0]
 
     # A. Semantic retrieval
     result = collection.query(
-        query_embeddings=[query_vector],
-        n_results=min(TOP_K, collection.count()),
+        query_embeddings=[query_vector.tolist()],
+        n_results=min(
+            TOP_K,
+            collection.count(),
+        ),
         include=[
             "documents",
             "metadatas",
-            "distances"
-        ]
+            "distances",
+        ],
     )
 
     semantic_docs = []
 
-    for doc, metadata, distance in zip(
+    for document, metadata, distance in zip(
         result["documents"][0],
         result["metadatas"][0],
-        result["distances"][0]
+        result["distances"][0],
     ):
         semantic_docs.append({
             "page": metadata["page"],
-            "text": doc,
+            "text": document,
             "distance": float(distance),
-            "match_type": "semantic"
+            "match_type": "semantic",
         })
 
-    # B. Exact vocabulary lookup
+    # B. Exact headword retrieval
     exact_docs = find_exact_vocabulary(
         question,
-        vocabulary_index
+        vocabulary_index,
     )
 
     if exact_docs:
-
         exact_vectors = encoder.encode(
             [
                 "passage: " + doc["text"]
                 for doc in exact_docs
             ],
             normalize_embeddings=True,
-            show_progress_bar=False
+            show_progress_bar=False,
         )
 
         query_array = np.asarray(
             query_vector,
-            dtype=np.float32
+            dtype=np.float32,
         )
 
-        for doc, vector in zip(exact_docs, exact_vectors):
-
+        for doc, vector in zip(
+            exact_docs,
+            exact_vectors,
+        ):
             similarity = float(
                 np.dot(query_array, vector)
             )
 
             doc["distance"] = max(
                 0.0,
-                1.0 - similarity
+                1.0 - similarity,
             )
 
-    # C. Exact matches first, followed by semantic results
+        exact_docs.sort(
+            key=lambda item: item["distance"]
+        )
+
+    # C. Combine exact and semantic results
     combined = []
     seen = set()
 
     for doc in exact_docs + semantic_docs:
-
         key = (
             doc["page"],
-            doc["text"].strip()
+            doc["text"].strip(),
         )
 
         if key in seen:
@@ -383,37 +480,54 @@ def retrieve(question):
         if len(combined) >= TOP_K:
             break
 
-    for i, doc in enumerate(combined):
-        doc["rank"] = i + 1
+    for rank, doc in enumerate(combined, start=1):
+        doc["rank"] = rank
 
-    print("\n========== HYBRID RETRIEVAL ==========")
+    print("========== RETRIEVAL ==========")
     print(f"Question: {question}")
 
     for doc in combined:
         print(
             f"Rank {doc['rank']} | "
             f"Page {doc['page']} | "
-            f"Type {doc['match_type']} | "
+            f"{doc['match_type']} | "
             f"Distance {doc['distance']:.4f}"
         )
 
-    print("======================================\n")
+    print("================================")
 
     return combined
 
 
-# ============================================================
-# 7. GROQ RESPONSE GENERATION
-# ============================================================
+# --------------------------------------------------
+# GROQ RESPONSE GENERATION
+# --------------------------------------------------
 
 def rag_query(question, api_key):
+    """
+    Retrieve relevant vocabulary evidence and
+    generate a grounded Filipino explanation.
+    """
+
+    if not api_key:
+        raise ValueError(
+            "GROQ_API_KEY is missing."
+        )
+
+    question = str(question or "").strip()
+
+    if not question:
+        return {
+            "answer": FALLBACK_ANSWER,
+            "retrieved": [],
+        }
 
     docs = retrieve(question)
 
     if not docs:
         return {
             "answer": FALLBACK_ANSWER,
-            "retrieved": []
+            "retrieved": [],
         }
 
     context = "\n\n".join(
@@ -425,33 +539,43 @@ def rag_query(question, api_key):
         for doc in docs
     )
 
-    groq_client = Groq(api_key=api_key)
+    client = Groq(api_key=api_key)
 
-    completion = groq_client.chat.completions.create(
+    completion = client.chat.completions.create(
         model=GROQ_MODEL,
         temperature=0.2,
         max_completion_tokens=500,
         messages=[
             {
                 "role": "system",
-                "content": SYSTEM_PROMPT
+                "content": SYSTEM_PROMPT,
             },
             {
                 "role": "user",
                 "content": (
                     f"DOCUMENT CONTEXT:\n{context}\n\n"
                     f"QUESTION: {question}"
-                )
-            }
-        ]
+                ),
+            },
+        ],
     )
 
-    answer = completion.choices[0].message.content or ""
+    answer = (
+        completion.choices[0].message.content or ""
+    ).strip()
 
-    if not answer.strip():
+    if not answer:
         answer = FALLBACK_ANSWER
 
+    # Do not expose irrelevant retrieval excerpts
+    # when the model explicitly refuses the question.
+    if answer.casefold() == FALLBACK_ANSWER.casefold():
+        return {
+            "answer": FALLBACK_ANSWER,
+            "retrieved": [],
+        }
+
     return {
-        "answer": answer.strip(),
-        "retrieved": docs
+        "answer": answer,
+        "retrieved": docs,
     }
