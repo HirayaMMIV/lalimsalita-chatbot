@@ -16,3 +16,5 @@ hf_cache/
 onnx_model/
 onnx_model_original/
 retrieval_data/embeddings_backup.npy
+lalimsalita_chats.db
+
