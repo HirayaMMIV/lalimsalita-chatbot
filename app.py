@@ -74,7 +74,8 @@ def initialize_database():
             )
         """)
 
-        # Compatibility with older databases
+        # Support existing databases that do not yet
+        # contain the retrieved_json column.
         columns = {
             row["name"]
             for row in connection.execute(
@@ -181,6 +182,7 @@ def save_message(
                 json.dumps(
                     retrieved or [],
                     ensure_ascii=False,
+                    default=str,
                 ),
                 now,
             ),
@@ -232,16 +234,16 @@ if "pending_question" not in st.session_state:
 
 
 # ============================================================
-# COMPLETE CSS - LIGHT THEME AND VISIBILITY FIX
+# COMPLETE LIGHT THEME CSS
 # ============================================================
 
 st.markdown(
     """
     <style>
 
-    /* --------------------------------------------------------
-       APPLICATION BACKGROUND
-       -------------------------------------------------------- */
+    /* ========================================================
+       GLOBAL BACKGROUND
+       ======================================================== */
 
     html,
     body,
@@ -262,12 +264,10 @@ st.markdown(
             ) !important;
     }
 
-    /* --------------------------------------------------------
-       HIDE STREAMLIT HEADER
-       -------------------------------------------------------- */
+    /* Hide default Streamlit header */
 
     header[data-testid="stHeader"] {
-        display: none !important;
+        background: transparent !important;
     }
 
     [data-testid="stToolbar"],
@@ -283,9 +283,9 @@ st.markdown(
         visibility: hidden;
     }
 
-    /* --------------------------------------------------------
-       MAIN CONTAINER
-       -------------------------------------------------------- */
+    /* ========================================================
+       MAIN CONTENT
+       ======================================================== */
 
     .block-container {
         max-width: 820px;
@@ -293,9 +293,7 @@ st.markdown(
         padding-bottom: 2rem !important;
     }
 
-    /* --------------------------------------------------------
-       DEFAULT TEXT VISIBILITY
-       -------------------------------------------------------- */
+    /* Global readable text */
 
     .stApp p,
     .stApp li,
@@ -309,9 +307,9 @@ st.markdown(
         color: #35285D;
     }
 
-    /* --------------------------------------------------------
+    /* ========================================================
        SIDEBAR
-       -------------------------------------------------------- */
+       ======================================================== */
 
     section[data-testid="stSidebar"] {
         background: #F3EFFF !important;
@@ -367,6 +365,7 @@ st.markdown(
     section[data-testid="stSidebar"]
     .stButton > button p {
         color: #49329C !important;
+        -webkit-text-fill-color: #49329C !important;
         opacity: 1 !important;
     }
 
@@ -376,26 +375,41 @@ st.markdown(
         border-color: #B7A5F2 !important;
     }
 
-    /* Sidebar dataset information */
+    /* ========================================================
+       DATASET INFORMATION - FIX INVISIBLE TEXT
+       ======================================================== */
 
     section[data-testid="stSidebar"]
     [data-testid="stAlert"] {
-        background: #EDE7FF !important;
-        border: 1px solid #DCD2FF !important;
+        background: #E9E2FF !important;
+        border: 1px solid #D7C9FF !important;
         border-radius: 12px !important;
     }
 
+    section[data-testid="stSidebar"]
+    [data-testid="stAlert"] *,
     section[data-testid="stSidebar"]
     [data-testid="stAlert"] p,
     section[data-testid="stSidebar"]
     [data-testid="stAlert"] span {
         color: #49329C !important;
+        -webkit-text-fill-color: #49329C !important;
         opacity: 1 !important;
     }
 
-    /* --------------------------------------------------------
-       MAIN CHAT TITLE
-       -------------------------------------------------------- */
+    .dataset-card {
+        background: #E9E2FF;
+        border: 1px solid #D7C9FF;
+        border-radius: 12px;
+        padding: 15px;
+        color: #49329C !important;
+        font-size: 14px;
+        line-height: 1.6;
+    }
+
+    /* ========================================================
+       CHAT TITLE
+       ======================================================== */
 
     .chat-title {
         font-size: 28px;
@@ -410,9 +424,9 @@ st.markdown(
         margin-bottom: 22px;
     }
 
-    /* --------------------------------------------------------
+    /* ========================================================
        WELCOME SCREEN
-       -------------------------------------------------------- */
+       ======================================================== */
 
     .welcome-title {
         color: #49329C !important;
@@ -430,9 +444,9 @@ st.markdown(
         margin-bottom: 30px;
     }
 
-    /* --------------------------------------------------------
+    /* ========================================================
        SUGGESTED QUESTION BUTTONS
-       -------------------------------------------------------- */
+       ======================================================== */
 
     [data-testid="stMain"]
     .stButton > button {
@@ -451,6 +465,7 @@ st.markdown(
     [data-testid="stMain"]
     .stButton > button span {
         color: #6547C3 !important;
+        -webkit-text-fill-color: #6547C3 !important;
         opacity: 1 !important;
     }
 
@@ -460,9 +475,9 @@ st.markdown(
         border-color: #A998ED !important;
     }
 
-    /* --------------------------------------------------------
-       CHAT MESSAGE VISIBILITY
-       -------------------------------------------------------- */
+    /* ========================================================
+       CHAT MESSAGES
+       ======================================================== */
 
     [data-testid="stChatMessage"] {
         background: transparent !important;
@@ -482,19 +497,36 @@ st.markdown(
         opacity: 1 !important;
     }
 
-    [data-testid="stChatMessageAvatarUser"] {
+    /* ========================================================
+       USER AVATAR - FIX BLACK BACKGROUND
+       ======================================================== */
+
+    [data-testid="stChatMessageAvatarUser"],
+    [data-testid="stChatMessageAvatarUser"] > div,
+    [data-testid="stChatMessageAvatarUser"]
+    [data-testid="stAvatar"] {
         background: #E99AA6 !important;
         color: #35285D !important;
+        border-radius: 10px !important;
     }
+
+    [data-testid="stChatMessageAvatarUser"] *,
+    [data-testid="stChatMessageAvatarUser"] svg {
+        color: #35285D !important;
+        stroke: #35285D !important;
+    }
+
+    /* Assistant avatar */
 
     [data-testid="stChatMessageAvatarAssistant"] {
         background: #F1EAFF !important;
         color: #49329C !important;
+        border-radius: 10px !important;
     }
 
-    /* --------------------------------------------------------
+    /* ========================================================
        LOADING INDICATOR
-       -------------------------------------------------------- */
+       ======================================================== */
 
     .loading-message {
         display: flex;
@@ -527,9 +559,9 @@ st.markdown(
         }
     }
 
-    /* --------------------------------------------------------
+    /* ========================================================
        QUESTION LABEL
-       -------------------------------------------------------- */
+       ======================================================== */
 
     .question-label {
         color: #49329C !important;
@@ -539,9 +571,9 @@ st.markdown(
         margin-bottom: 10px;
     }
 
-    /* --------------------------------------------------------
+    /* ========================================================
        QUESTION FORM
-       -------------------------------------------------------- */
+       ======================================================== */
 
     [data-testid="stForm"] {
         background: #F0EBFF !important;
@@ -550,54 +582,114 @@ st.markdown(
         padding: 14px !important;
     }
 
+    /* ========================================================
+       INPUT FIELD - FIX RED OUTLINE
+       ======================================================== */
+
+    [data-testid="stForm"]
     [data-testid="stTextInput"] input {
         background: #FFFFFF !important;
         color: #35285D !important;
         -webkit-text-fill-color: #35285D !important;
         caret-color: #49329C !important;
+        border: 1px solid #D8CFFF !important;
         border-radius: 10px !important;
+        outline: none !important;
+        box-shadow: none !important;
     }
 
+    [data-testid="stForm"]
     [data-testid="stTextInput"] input::placeholder {
         color: #9486B2 !important;
-        opacity: 1 !important;
         -webkit-text-fill-color: #9486B2 !important;
+        opacity: 1 !important;
     }
 
+    [data-testid="stForm"]
     [data-testid="stTextInput"] input:focus {
+        border-color: #7154E8 !important;
+        outline: none !important;
+        box-shadow: 0 0 0 1px #7154E8 !important;
+    }
+
+    /* BaseWeb input wrapper */
+
+    [data-testid="stForm"]
+    [data-testid="stTextInput"]
+    [data-baseweb="input"] {
+        background: #FFFFFF !important;
+        border-color: #D8CFFF !important;
+    }
+
+    [data-testid="stForm"]
+    [data-testid="stTextInput"]
+    [data-baseweb="input"]:focus-within {
         border-color: #7154E8 !important;
         box-shadow: 0 0 0 1px #7154E8 !important;
     }
 
-    /* Submit button */
+    /* ========================================================
+       IPADALA BUTTON - ALWAYS PURPLE
+       ======================================================== */
 
     [data-testid="stForm"]
-    button[kind="primary"] {
+    button[type="submit"],
+    [data-testid="stForm"]
+    button[kind="primary"],
+    [data-testid="stForm"]
+    [data-testid="stFormSubmitButton"] button {
         background: #7154E8 !important;
+        background-color: #7154E8 !important;
+        background-image: none !important;
+        border: 1px solid #7154E8 !important;
         color: #FFFFFF !important;
-        border: none !important;
         border-radius: 10px !important;
+        box-shadow: none !important;
         min-height: 42px;
     }
 
-    [data-testid="stForm"]
-    button[kind="primary"] *,
-    [data-testid="stForm"]
-    button[kind="primary"] p,
-    [data-testid="stForm"]
-    button[kind="primary"] span {
-        color: #FFFFFF !important;
-        opacity: 1 !important;
-    }
+    /* Hover */
 
+    [data-testid="stForm"]
+    button[type="submit"]:hover,
     [data-testid="stForm"]
     button[kind="primary"]:hover {
         background: #6042D8 !important;
+        background-color: #6042D8 !important;
+        border-color: #6042D8 !important;
     }
 
-    /* --------------------------------------------------------
-       RETRIEVAL SOURCE EXPANDER
-       -------------------------------------------------------- */
+    /* Focus and active */
+
+    [data-testid="stForm"]
+    button[type="submit"]:focus,
+    [data-testid="stForm"]
+    button[type="submit"]:active,
+    [data-testid="stForm"]
+    button[kind="primary"]:focus,
+    [data-testid="stForm"]
+    button[kind="primary"]:active {
+        background: #7154E8 !important;
+        background-color: #7154E8 !important;
+        border-color: #7154E8 !important;
+        color: #FFFFFF !important;
+        box-shadow: none !important;
+    }
+
+    /* Button text remains white */
+
+    [data-testid="stForm"]
+    button[type="submit"] *,
+    [data-testid="stForm"]
+    button[kind="primary"] * {
+        color: #FFFFFF !important;
+        -webkit-text-fill-color: #FFFFFF !important;
+        opacity: 1 !important;
+    }
+
+    /* ========================================================
+       RETRIEVED SOURCE EXPANDER
+       ======================================================== */
 
     [data-testid="stExpander"] {
         background: #F8F5FF !important;
@@ -612,9 +704,9 @@ st.markdown(
         color: #49329C !important;
     }
 
-    /* --------------------------------------------------------
+    /* ========================================================
        FOOTER
-       -------------------------------------------------------- */
+       ======================================================== */
 
     .app-footer {
         text-align: center;
@@ -666,8 +758,10 @@ def show_loading(placeholder, message):
 # CHATBOT RESPONSE
 # ============================================================
 
-def generate_chatbot_response(question, loading_placeholder):
-
+def generate_chatbot_response(
+    question,
+    loading_placeholder,
+):
     api_key = get_groq_api_key()
 
     if not api_key:
@@ -721,7 +815,7 @@ def generate_chatbot_response(question, loading_placeholder):
     loading_placeholder.empty()
 
     if "error" in error_holder:
-        logger.error(
+        logger.exception(
             "LalimSalita request failed: %s",
             error_holder["error"],
         )
@@ -744,17 +838,23 @@ def generate_chatbot_response(question, loading_placeholder):
 # ============================================================
 
 def display_message(message):
-
     role = message["role"]
 
-    avatar = (
-        str(LOGO_PATH)
-        if role == "assistant" and LOGO_PATH.exists()
-        else "📖" if role == "assistant" else "👤"
-    )
+    # Use a Unicode symbol for the user avatar
+    # to avoid the dark silhouette emoji.
+    if role == "assistant":
+        avatar = (
+            str(LOGO_PATH)
+            if LOGO_PATH.exists()
+            else "📖"
+        )
+    else:
+        avatar = "🙂"
 
-    with st.chat_message(role, avatar=avatar):
-
+    with st.chat_message(
+        role,
+        avatar=avatar,
+    ):
         st.markdown(message["content"])
 
         retrieved = message.get("retrieved", [])
@@ -764,14 +864,11 @@ def display_message(message):
             and retrieved
             and message["content"].strip() != FALLBACK
         ):
-
             with st.expander(
                 "Retrieved source chunks",
                 expanded=False,
             ):
-
                 for doc in retrieved:
-
                     st.markdown(
                         f"**Rank {doc.get('rank', '?')} "
                         f"— PDF Page {doc.get('page', '?')}**"
@@ -784,7 +881,9 @@ def display_message(message):
                             f"Cosine distance: {distance:.4f}"
                         )
 
-                    st.write(doc.get("text", ""))
+                    st.write(
+                        doc.get("text", "")
+                    )
 
 
 # ============================================================
@@ -794,13 +893,18 @@ def display_message(message):
 with st.sidebar:
 
     if LOGO_PATH.exists():
-        st.image(str(LOGO_PATH), width=52)
+        st.image(
+            str(LOGO_PATH),
+            width=52,
+        )
     else:
         st.markdown("📖")
 
     st.markdown(
         """
-        <div class="brand-title">LalimSalita</div>
+        <div class="brand-title">
+            LalimSalita
+        </div>
         <div class="brand-subtitle">
             Kasama mo sa pag-unawa ng Filipino
         </div>
@@ -820,7 +924,9 @@ with st.sidebar:
         use_container_width=True,
         key="new_conversation",
     ):
-        st.session_state.conversation_id = create_conversation()
+        st.session_state.conversation_id = (
+            create_conversation()
+        )
         st.session_state.pending_question = None
         st.rerun()
 
@@ -830,13 +936,14 @@ with st.sidebar:
     )
 
     for conversation in list_conversations():
-
         if st.button(
             conversation["title"],
             key=f"chat_{conversation['id']}",
             use_container_width=True,
         ):
-            st.session_state.conversation_id = conversation["id"]
+            st.session_state.conversation_id = (
+                conversation["id"]
+            )
             st.session_state.pending_question = None
             st.rerun()
 
@@ -846,7 +953,6 @@ with st.sidebar:
     )
 
     with st.expander("Retrieval settings"):
-
         st.markdown(
             """
             **Chunk size:** 500 characters
@@ -867,9 +973,16 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    st.info(
-        "Ang mga sagot ay nakabatay sa "
-        "Talasalitaan Aralin 1–29."
+    # Custom dataset card ensures readable text
+    # regardless of Streamlit's alert theme.
+    st.markdown(
+        """
+        <div class="dataset-card">
+            Ang mga sagot ay nakabatay sa
+            Talasalitaan Aralin 1–29.
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
 
@@ -879,7 +992,9 @@ with st.sidebar:
 
 st.markdown(
     """
-    <div class="chat-title">LalimSalita</div>
+    <div class="chat-title">
+        LalimSalita
+    </div>
     <div class="chat-subtitle">
         Filipino Vocabulary Learning Companion
     </div>
@@ -922,14 +1037,14 @@ if not messages:
     cols = st.columns(3)
 
     for col, example in zip(cols, examples):
-
         with col:
-
             if st.button(
                 example,
                 use_container_width=True,
             ):
-                st.session_state.pending_question = example
+                st.session_state.pending_question = (
+                    example
+                )
                 st.rerun()
 
 
@@ -942,7 +1057,7 @@ for message in messages:
 
 
 # ============================================================
-# LOADING AREA ABOVE INPUT
+# LOADING AREA ABOVE QUESTION INPUT
 # ============================================================
 
 loading_placeholder = st.empty()
@@ -974,7 +1089,6 @@ with st.form(
     )
 
     with input_col:
-
         question_input = st.text_input(
             "Iyong tanong",
             placeholder="I-type ang iyong tanong dito...",
@@ -982,7 +1096,6 @@ with st.form(
         )
 
     with button_col:
-
         submitted = st.form_submit_button(
             "Ipadala",
             type="primary",
@@ -1033,7 +1146,9 @@ if question and question.strip():
         )
 
     except Exception:
-        logger.exception("Unexpected chatbot error.")
+        logger.exception(
+            "Unexpected chatbot error."
+        )
 
         loading_placeholder.empty()
 
