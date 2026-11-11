@@ -2,13 +2,14 @@
 import os
 import json
 import uuid
+import time
 import sqlite3
 import logging
+import threading
 from pathlib import Path
 from datetime import datetime
 
 import streamlit as st
-from dotenv import load_dotenv
 
 from rag_backend import rag_query, FALLBACK
 
@@ -17,132 +18,91 @@ from rag_backend import rag_query, FALLBACK
 # CONFIGURATION
 # ============================================================
 
-BASE_DIR = Path(__file__).resolve().parent
-
-load_dotenv(BASE_DIR / ".env")
-
-DB_PATH = BASE_DIR / "lalimsalita_chats.db"
-LOGO_PATH = BASE_DIR / "lalimsalita_logo.png"
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("lalimsalita.app")
-
 st.set_page_config(
     page_title="LalimSalita",
     page_icon="📖",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.markdown(
-    """
-    <style>
-    /* Hide Streamlit's top header */
-    header[data-testid="stHeader"] {
-        display: none !important;
-    }
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / "lalimsalita_chats.db"
+LOGO_PATH = BASE_DIR / "lalimsalita_logo.png"
 
-    /* Hide Streamlit's toolbar */
-    [data-testid="stToolbar"] {
-        display: none !important;
-    }
-
-    /* Hide Streamlit's decoration bar */
-    [data-testid="stDecoration"] {
-        display: none !important;
-    }
-
-    /* Remove extra space above the chatbot */
-    .block-container {
-        padding-top: 1.5rem !important;
-    }
-
-    /* Keep sidebar content positioned correctly */
-    [data-testid="stSidebar"] .block-container {
-        padding-top: 1.5rem !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
+ERROR_MESSAGE = (
+    "May problema sa pagkuha ng sagot. "
+    "Pakisubukang muli."
 )
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("lalimsalita.app")
+
 
 # ============================================================
 # DATABASE
 # ============================================================
 
-def db_connection():
-
+def get_connection():
     connection = sqlite3.connect(
         str(DB_PATH),
         timeout=15,
     )
-
     connection.row_factory = sqlite3.Row
-
     return connection
 
 
 def initialize_database():
+    with get_connection() as connection:
 
-    with db_connection() as conn:
-
-        conn.execute("""
+        connection.execute("""
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
-                visitor_id TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
         """)
 
-        conn.execute("""
+        connection.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 conversation_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 retrieved_json TEXT DEFAULT '[]',
-                created_at TEXT
+                created_at TEXT NOT NULL
             )
         """)
 
-        for table, column, definition in [
-            ("conversations", "visitor_id", "TEXT"),
-            ("messages", "retrieved_json", "TEXT DEFAULT '[]'"),
-            ("messages", "created_at", "TEXT"),
-        ]:
+        # Support older local databases.
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(messages)"
+            ).fetchall()
+        }
 
-            columns = {
-                row["name"]
-                for row in conn.execute(
-                    f"PRAGMA table_info({table})"
-                ).fetchall()
-            }
-
-            if column not in columns:
-                conn.execute(
-                    f"ALTER TABLE {table} "
-                    f"ADD COLUMN {column} {definition}"
-                )
+        if "retrieved_json" not in columns:
+            connection.execute("""
+                ALTER TABLE messages
+                ADD COLUMN retrieved_json TEXT DEFAULT '[]'
+            """)
 
 
 def create_conversation():
-
     conversation_id = str(uuid.uuid4())
     now = datetime.now().isoformat()
 
-    with db_connection() as conn:
-
-        conn.execute(
+    with get_connection() as connection:
+        connection.execute(
             """
             INSERT INTO conversations
-            (id, title, visitor_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            (id, title, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
             """,
             (
                 conversation_id,
                 "Bagong usapan",
-                st.session_state.visitor_id,
                 now,
                 now,
             ),
@@ -151,55 +111,37 @@ def create_conversation():
     return conversation_id
 
 
-def get_conversations():
-
-    with db_connection() as conn:
-
-        rows = conn.execute(
-            """
+def list_conversations():
+    with get_connection() as connection:
+        rows = connection.execute("""
             SELECT id, title
             FROM conversations
-            WHERE visitor_id = ?
             ORDER BY updated_at DESC
-            """,
-            (st.session_state.visitor_id,),
-        ).fetchall()
+        """).fetchall()
 
     return [dict(row) for row in rows]
 
 
-def get_messages(conversation_id):
-
-    with db_connection() as conn:
-
-        rows = conn.execute(
+def load_messages(conversation_id):
+    with get_connection() as connection:
+        rows = connection.execute(
             """
-            SELECT m.role, m.content, m.retrieved_json
-            FROM messages m
-            JOIN conversations c
-              ON c.id = m.conversation_id
-            WHERE m.conversation_id = ?
-              AND c.visitor_id = ?
-            ORDER BY m.id
+            SELECT role, content, retrieved_json
+            FROM messages
+            WHERE conversation_id = ?
+            ORDER BY id ASC
             """,
-            (
-                conversation_id,
-                st.session_state.visitor_id,
-            ),
+            (conversation_id,),
         ).fetchall()
 
     messages = []
 
     for row in rows:
-
         try:
             retrieved = json.loads(
                 row["retrieved_json"] or "[]"
             )
         except (ValueError, TypeError):
-            retrieved = []
-
-        if not isinstance(retrieved, list):
             retrieved = []
 
         messages.append({
@@ -217,12 +159,10 @@ def save_message(
     content,
     retrieved=None,
 ):
-
     now = datetime.now().isoformat()
 
-    with db_connection() as conn:
-
-        cursor = conn.execute(
+    with get_connection() as connection:
+        connection.execute(
             """
             INSERT INTO messages
             (
@@ -232,317 +172,444 @@ def save_message(
                 retrieved_json,
                 created_at
             )
-            SELECT id, ?, ?, ?, ?
-            FROM conversations
-            WHERE id = ? AND visitor_id = ?
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
+                conversation_id,
                 role,
-                content,
+                str(content),
                 json.dumps(
                     retrieved or [],
                     ensure_ascii=False,
                 ),
                 now,
-                conversation_id,
-                st.session_state.visitor_id,
             ),
         )
 
-        if cursor.rowcount == 0:
-            raise ValueError(
-                "Conversation not found."
-            )
-
-        conn.execute(
+        connection.execute(
             """
             UPDATE conversations
             SET updated_at = ?
-            WHERE id = ? AND visitor_id = ?
-            """,
-            (
-                now,
-                conversation_id,
-                st.session_state.visitor_id,
-            ),
-        )
-
-
-def update_title(conversation_id, question):
-
-    title = question.strip()[:45]
-
-    with db_connection() as conn:
-
-        conn.execute(
-            """
-            UPDATE conversations
-            SET title = ?
             WHERE id = ?
-              AND visitor_id = ?
-              AND title = 'Bagong usapan'
             """,
-            (
-                title,
-                conversation_id,
-                st.session_state.visitor_id,
-            ),
+            (now, conversation_id),
         )
+
+
+def update_conversation_title(conversation_id, question):
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT title
+            FROM conversations
+            WHERE id = ?
+            """,
+            (conversation_id,),
+        ).fetchone()
+
+        if row and row["title"] == "Bagong usapan":
+            connection.execute(
+                """
+                UPDATE conversations
+                SET title = ?
+                WHERE id = ?
+                """,
+                (question[:55], conversation_id),
+            )
 
 
 # ============================================================
-# SESSION
+# SESSION STATE
 # ============================================================
 
 initialize_database()
 
-if "visitor_id" not in st.session_state:
-    st.session_state.visitor_id = str(uuid.uuid4())
-
 if "conversation_id" not in st.session_state:
+    st.session_state.conversation_id = create_conversation()
 
-    conversations = get_conversations()
-
-    st.session_state.conversation_id = (
-        conversations[0]["id"]
-        if conversations
-        else create_conversation()
-    )
+if "pending_question" not in st.session_state:
+    st.session_state.pending_question = None
 
 
 # ============================================================
 # CSS
 # ============================================================
 
-st.markdown("""
-<style>
+st.markdown(
+    """
+    <style>
 
-.stApp {
-    background:
-        radial-gradient(
-            circle at 85% 0%,
-            #EFE8FF 0%,
-            transparent 42%
-        ),
-        #FCFAFF !important;
-    color: #302653;
-}
+    /* Main application */
+    .stApp {
+        background:
+            radial-gradient(
+                ellipse at top right,
+                #f0eaff 0%,
+                #faf8ff 45%,
+                #fcfaff 100%
+            );
+        color: #35285d;
+    }
 
-.block-container {
-    max-width: 900px !important;
-    padding-top: 2rem !important;
-}
+    /* Remove Streamlit's black header */
+    header[data-testid="stHeader"] {
+        display: none !important;
+    }
 
-section[data-testid="stSidebar"] {
-    background: #F5F1FF !important;
-    border-right: 1px solid #DED6F7;
-}
+    [data-testid="stToolbar"] {
+        display: none !important;
+    }
 
-.chat-title {
-    color: #49329C;
-    font-size: 28px;
-    font-weight: 800;
-}
+    [data-testid="stDecoration"] {
+        display: none !important;
+    }
 
-.chat-subtitle {
-    color: #8175A2;
-    font-size: 12px;
-    margin-bottom: 22px;
-}
+    #MainMenu {
+        visibility: hidden;
+    }
 
-.sidebar-title {
-    color: #49329C;
-    font-size: 23px;
-    font-weight: 800;
-}
+    .block-container {
+        max-width: 820px;
+        padding-top: 1.5rem !important;
+        padding-bottom: 2rem;
+    }
 
-.sidebar-subtitle {
-    color: #8175A2;
-    font-size: 12px;
-}
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background: #f3efff !important;
+        border-right: 1px solid #e0d8f5;
+    }
 
-.sidebar-heading {
-    color: #8273A6;
-    font-size: 11px;
-    font-weight: 800;
-    letter-spacing: 1px;
-    margin-top: 25px;
-    margin-bottom: 10px;
-}
+    section[data-testid="stSidebar"] * {
+        color: #4d3a91;
+    }
 
-.welcome {
-    text-align: center;
-    margin-top: 75px;
-    margin-bottom: 35px;
-}
+    .brand-title {
+        font-size: 24px;
+        font-weight: 800;
+        color: #49329c;
+        margin-top: 8px;
+    }
 
-.welcome h1 {
-    color: #49329C;
-    font-size: 32px;
-    font-weight: 800;
-}
+    .brand-subtitle {
+        color: #9587b8;
+        font-size: 12px;
+        margin-top: 4px;
+    }
 
-.welcome p {
-    color: #8175A2;
-    font-size: 15px;
-}
+    .sidebar-heading {
+        font-size: 11px;
+        letter-spacing: 1.4px;
+        font-weight: 800;
+        color: #8874b0;
+        margin-top: 22px;
+        margin-bottom: 12px;
+    }
 
-.stButton > button {
-    background: #FFFFFF !important;
-    color: #5A43B3 !important;
-    border: 1px solid #DDD4FF !important;
-    border-radius: 12px !important;
-    min-height: 44px !important;
-    height: auto !important;
-    white-space: normal !important;
-}
+    section[data-testid="stSidebar"] button {
+        background: #ffffff;
+        color: #5b42b1;
+        border: 1px solid #e1d8ff;
+        border-radius: 12px;
+    }
 
-.stButton > button:hover {
-    background: #EEE9FF !important;
-    color: #49329C !important;
-}
+    section[data-testid="stSidebar"] button:hover {
+        background: #ece5ff;
+        color: #49329c;
+    }
 
-[data-testid="stForm"] {
-    background: #F0EBFF !important;
-    border: 1px solid #DED4FF !important;
-    border-radius: 18px !important;
-    padding: 14px !important;
-}
+    /* Chat title */
+    .chat-title {
+        font-size: 28px;
+        font-weight: 800;
+        color: #49329c;
+        margin-bottom: 3px;
+    }
 
-[data-testid="stForm"] input {
-    background: white !important;
-    color: #302653 !important;
-    border: 1px solid #DDD4FF !important;
-    border-radius: 12px !important;
-    min-height: 46px !important;
-}
+    .chat-subtitle {
+        color: #9789b6;
+        font-size: 12px;
+        margin-bottom: 22px;
+    }
 
-[data-testid="stForm"] input::placeholder {
-    color: #8D83A8 !important;
-    opacity: 1 !important;
-}
+    /* Welcome */
+    .welcome-title {
+        color: #49329c;
+        font-size: 30px;
+        font-weight: 800;
+        text-align: center;
+        margin-top: 75px;
+    }
 
-[data-testid="stForm"] button[kind="primary"],
-[data-testid="stForm"] button[data-testid="stBaseButton-primaryFormSubmit"] {
-    background: #7154E8 !important;
-    color: white !important;
-    border: 1px solid #7154E8 !important;
-    min-height: 46px !important;
-}
+    .welcome-description {
+        color: #9588b2;
+        text-align: center;
+        font-size: 14px;
+        margin-top: 10px;
+        margin-bottom: 30px;
+    }
 
-[data-testid="stChatMessage"] {
-    background: transparent !important;
-    border: none !important;
-}
+    /* Loading indicator */
+    .loading-message {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 2px 12px 2px;
+        color: #49329c;
+        font-size: 14px;
+        font-weight: 500;
+    }
 
-[data-testid="stChatMessageContent"] {
-    color: #302653 !important;
-}
+    .loading-spinner {
+        width: 17px;
+        height: 17px;
+        border: 2px solid #e1d9ff;
+        border-top-color: #7154e8;
+        border-radius: 50%;
+        animation: lalim-spin 0.8s linear infinite;
+        flex-shrink: 0;
+    }
 
-[data-testid="stExpander"] {
-    background: #F8F5FF !important;
-    border: 1px solid #DDD4FF !important;
-}
+    @keyframes lalim-spin {
+        to {
+            transform: rotate(360deg);
+        }
+    }
 
-[data-testid="stExpander"] summary,
-[data-testid="stExpander"] p,
-[data-testid="stExpander"] span {
-    color: #49329C !important;
-}
+    /* Question label */
+    .question-label {
+        color: #49329c;
+        font-size: 14px;
+        font-weight: 800;
+        margin-top: 18px;
+        margin-bottom: 10px;
+    }
 
-.app-footer {
-    text-align: center;
-    color: #9589B1;
-    font-size: 11px;
-    margin-top: 30px;
-}
+    /* Question form */
+    [data-testid="stForm"] {
+        background: #f0ebff;
+        border: 1px solid #e0d6ff;
+        border-radius: 18px;
+        padding: 14px;
+    }
 
-</style>
-""", unsafe_allow_html=True)
+    [data-testid="stForm"] input {
+        background: #ffffff !important;
+        color: #35285d !important;
+        border-radius: 10px !important;
+    }
+
+    [data-testid="stForm"] button {
+        background: #7154e8 !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 10px !important;
+        min-height: 42px;
+    }
+
+    [data-testid="stForm"] button:hover {
+        background: #6042d8 !important;
+    }
+
+    /* Chat messages */
+    [data-testid="stChatMessage"] {
+        background: transparent;
+        border: none;
+        padding: 12px 4px;
+    }
+
+    /* Expanders */
+    [data-testid="stExpander"] {
+        background: #f8f5ff;
+        border: 1px solid #dfd6ff;
+        border-radius: 12px;
+    }
+
+    [data-testid="stExpander"] summary {
+        color: #49329c !important;
+    }
+
+    /* Footer */
+    .app-footer {
+        text-align: center;
+        color: #aaa0c4;
+        font-size: 11px;
+        margin-top: 35px;
+    }
+
+    footer {
+        visibility: hidden;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ============================================================
-# GROQ KEY
+# GROQ API KEY
 # ============================================================
 
 def get_groq_api_key():
-
-    key = os.getenv(
-        "GROQ_API_KEY",
-        "",
-    ).strip()
+    key = os.getenv("GROQ_API_KEY", "").strip()
 
     if key:
         return key
 
     try:
-        return str(
-            st.secrets.get("GROQ_API_KEY", "")
-        ).strip()
-
+        key = st.secrets.get("GROQ_API_KEY", "")
+        return str(key).strip()
     except Exception:
         return ""
 
 
 # ============================================================
-# CHATBOT
+# LOADING INDICATOR
 # ============================================================
 
-def generate_response(question):
+def show_loading(placeholder, message):
+    """
+    Display a custom loading message.
+    """
+    placeholder.markdown(
+        f"""
+        <div class="loading-message">
+            <div class="loading-spinner"></div>
+            <span>{message}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
+# CHATBOT RESPONSE
+# ============================================================
+
+def generate_chatbot_response(question, loading_placeholder):
+    """
+    Run the existing rag_query() in a background thread.
+
+    This allows Streamlit to update the loading
+    message while the backend processes the question.
+
+    Note: The stage change is time-based because
+    rag_query() does not expose separate progress events.
+    """
 
     api_key = get_groq_api_key()
 
     if not api_key:
+        logger.error("GROQ_API_KEY is missing.")
+        return {
+            "answer": ERROR_MESSAGE,
+            "retrieved": [],
+        }
 
+    result_holder = {}
+    error_holder = {}
+
+    def run_backend():
+        try:
+            result_holder["data"] = rag_query(
+                question,
+                api_key=api_key,
+            )
+        except Exception as exc:
+            error_holder["error"] = exc
+
+    worker = threading.Thread(
+        target=run_backend,
+        daemon=True,
+    )
+
+    show_loading(
+        loading_placeholder,
+        "Hinahanap ang kahulugan...",
+    )
+
+    start_time = time.monotonic()
+    worker.start()
+
+    current_stage = "retrieval"
+
+    while worker.is_alive():
+        elapsed = time.monotonic() - start_time
+
+        # Estimated transition to answer generation.
+        if elapsed >= 3 and current_stage == "retrieval":
+            current_stage = "generation"
+
+            show_loading(
+                loading_placeholder,
+                "Binubuo ang sagot...",
+            )
+
+        worker.join(timeout=0.2)
+
+    loading_placeholder.empty()
+
+    if "error" in error_holder:
         logger.error(
-            "GROQ_API_KEY is missing."
+            "LalimSalita request failed: %s",
+            error_holder["error"],
         )
-
         return {
-            "answer": (
-                "Pansamantalang hindi available "
-                "ang chatbot. Pakisubukang muli."
-            ),
+            "answer": ERROR_MESSAGE,
             "retrieved": [],
         }
 
-    try:
+    result = result_holder.get("data") or {}
 
-        result = rag_query(
-            question,
-            api_key=api_key,
-        )
+    return {
+        "answer": result.get("answer", FALLBACK),
+        "retrieved": result.get("retrieved", []),
+    }
 
-        answer = str(
-            result.get("answer") or FALLBACK
-        )
 
-        retrieved = result.get(
-            "retrieved",
-            [],
-        )
+# ============================================================
+# DISPLAY CHAT MESSAGE
+# ============================================================
 
-        if FALLBACK.casefold() in answer.casefold():
-            retrieved = []
+def display_message(message):
+    role = message["role"]
 
-        return {
-            "answer": answer,
-            "retrieved": retrieved,
-        }
+    avatar = (
+        str(LOGO_PATH)
+        if role == "assistant" and LOGO_PATH.exists()
+        else "📖" if role == "assistant" else "👤"
+    )
 
-    except Exception:
+    with st.chat_message(role, avatar=avatar):
 
-        logger.exception(
-            "Chatbot request failed."
-        )
+        st.markdown(message["content"])
 
-        return {
-            "answer": (
-                "May problema sa pagkuha ng sagot. "
-                "Pakisubukang muli."
-            ),
-            "retrieved": [],
-        }
+        retrieved = message.get("retrieved", [])
+
+        if (
+            role == "assistant"
+            and retrieved
+            and message["content"].strip() != FALLBACK
+        ):
+            with st.expander(
+                "Retrieved source chunks",
+                expanded=False,
+            ):
+                for doc in retrieved:
+                    st.markdown(
+                        f"**Rank {doc.get('rank', '?')} "
+                        f"— PDF Page {doc.get('page', '?')}**"
+                    )
+
+                    distance = doc.get("distance")
+
+                    if isinstance(distance, (int, float)):
+                        st.caption(
+                            f"Cosine distance: {distance:.4f}"
+                        )
+
+                    st.write(doc.get("text", ""))
 
 
 # ============================================================
@@ -552,14 +619,16 @@ def generate_response(question):
 with st.sidebar:
 
     if LOGO_PATH.exists():
-        st.image(str(LOGO_PATH), width=55)
+        st.image(str(LOGO_PATH), width=52)
+    else:
+        st.markdown("📖")
 
     st.markdown(
         """
-<div class="sidebar-title">LalimSalita</div>
-<div class="sidebar-subtitle">
-Kasama mo sa pag-unawa ng Filipino
-</div>
+        <div class="brand-title">LalimSalita</div>
+        <div class="brand-subtitle">
+            Kasama mo sa pag-unawa ng Filipino
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -574,13 +643,10 @@ Kasama mo sa pag-unawa ng Filipino
     if st.button(
         "Bagong usapan",
         use_container_width=True,
-        key="new_chat",
+        key="new_conversation",
     ):
-
-        st.session_state.conversation_id = (
-            create_conversation()
-        )
-
+        st.session_state.conversation_id = create_conversation()
+        st.session_state.pending_question = None
         st.rerun()
 
     st.markdown(
@@ -588,18 +654,14 @@ Kasama mo sa pag-unawa ng Filipino
         unsafe_allow_html=True,
     )
 
-    for conversation in get_conversations():
-
+    for conversation in list_conversations():
         if st.button(
             conversation["title"],
             key=f"chat_{conversation['id']}",
             use_container_width=True,
         ):
-
-            st.session_state.conversation_id = (
-                conversation["id"]
-            )
-
+            st.session_state.conversation_id = conversation["id"]
+            st.session_state.pending_question = None
             st.rerun()
 
     st.markdown(
@@ -608,18 +670,18 @@ Kasama mo sa pag-unawa ng Filipino
     )
 
     with st.expander("Retrieval settings"):
-
         st.markdown(
             """
-**Chunk size:** 500 characters
+            **Chunk size:** 500 characters
 
-**Chunk overlap:** 100 characters
+            **Chunk overlap:** 100 characters
 
-**Top-K:** 3
+            **Top-K:** 3
 
-**Retrieval:** Hybrid exact-match and semantic search
+            **Retrieval:** Hybrid exact-match
+            and semantic search
 
-**Embedding model:** Multilingual E5 (hosted inference)
+            **Embedding model:** Quantized ONNX
             """
         )
 
@@ -635,15 +697,15 @@ Kasama mo sa pag-unawa ng Filipino
 
 
 # ============================================================
-# MAIN HEADER
+# MAIN CHAT INTERFACE
 # ============================================================
 
 st.markdown(
     """
-<div class="chat-title">LalimSalita</div>
-<div class="chat-subtitle">
-Filipino Vocabulary Learning Companion
-</div>
+    <div class="chat-title">LalimSalita</div>
+    <div class="chat-subtitle">
+        Filipino Vocabulary Learning Companion
+    </div>
     """,
     unsafe_allow_html=True,
 )
@@ -651,8 +713,7 @@ Filipino Vocabulary Learning Companion
 st.divider()
 
 conversation_id = st.session_state.conversation_id
-
-messages = get_messages(conversation_id)
+messages = load_messages(conversation_id)
 
 
 # ============================================================
@@ -663,13 +724,14 @@ if not messages:
 
     st.markdown(
         """
-<div class="welcome">
-    <h1>Ano ang gusto mong malaman?</h1>
-    <p>
-        Magtanong tungkol sa kahulugan at
-        konteksto ng mga salitang Filipino.
-    </p>
-</div>
+        <div class="welcome-title">
+            Ano ang gusto mong malaman?
+        </div>
+
+        <div class="welcome-description">
+            Magtanong tungkol sa kahulugan at
+            konteksto ng mga salitang Filipino.
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -680,95 +742,49 @@ if not messages:
         "Ano ang kahulugan ng nagpipighati?",
     ]
 
-    columns = st.columns(3)
+    cols = st.columns(3)
 
-    for index, example in enumerate(examples):
-
-        with columns[index]:
-
+    for col, example in zip(cols, examples):
+        with col:
             if st.button(
                 example,
-                key=f"example_{index}",
                 use_container_width=True,
             ):
-
                 st.session_state.pending_question = example
                 st.rerun()
 
 
 # ============================================================
-# DISPLAY MESSAGES
+# DISPLAY CONVERSATION
 # ============================================================
 
 for message in messages:
-
-    role = message["role"]
-
-    if role not in ("user", "assistant"):
-        continue
-
-    avatar = None
-
-    if role == "assistant" and LOGO_PATH.exists():
-        avatar = str(LOGO_PATH)
-
-    with st.chat_message(
-        role,
-        avatar=avatar,
-    ):
-
-        st.markdown(message["content"])
-
-        retrieved = message.get("retrieved") or []
-
-        if (
-            role == "assistant"
-            and retrieved
-            and FALLBACK.casefold()
-            not in message["content"].casefold()
-        ):
-
-            with st.expander(
-                "Retrieved source chunks"
-            ):
-
-                for item in retrieved:
-
-                    st.markdown(
-                        f"**Rank {item.get('rank', '?')} "
-                        f"— Page {item.get('page', '?')}**"
-                    )
-
-                    st.caption(
-                        f"Match: {item.get('match_type', 'semantic')}"
-                    )
-
-                    st.write(
-                        item.get("text", "")
-                    )
+    display_message(message)
 
 
 # ============================================================
-# QUESTION FORM
+# LOADING AREA
+# Must appear ABOVE the question label.
+# ============================================================
+
+loading_placeholder = st.empty()
+
+
+# ============================================================
+# QUESTION INPUT
 # ============================================================
 
 st.markdown(
     """
-<div style="
-    color:#49329C;
-    font-size:14px;
-    font-weight:800;
-    margin-top:25px;
-    margin-bottom:10px;
-">
-Magtanong sa LalimSalita
-</div>
+    <div class="question-label">
+        Magtanong sa LalimSalita
+    </div>
     """,
     unsafe_allow_html=True,
 )
 
 with st.form(
-    "question_form",
+    key="question_form",
     clear_on_submit=True,
     enter_to_submit=True,
 ):
@@ -776,18 +792,17 @@ with st.form(
     input_col, button_col = st.columns(
         [5, 1],
         gap="small",
+        vertical_alignment="bottom",
     )
 
     with input_col:
-
         question_input = st.text_input(
-            "Tanong",
+            "Iyong tanong",
             placeholder="I-type ang iyong tanong dito...",
             label_visibility="collapsed",
         )
 
     with button_col:
-
         submitted = st.form_submit_button(
             "Ipadala",
             type="primary",
@@ -801,42 +816,52 @@ with st.form(
 
 question = None
 
-if submitted:
+if st.session_state.pending_question:
+    question = st.session_state.pending_question
+    st.session_state.pending_question = None
+
+elif submitted:
     question = question_input.strip()
 
-elif "pending_question" in st.session_state:
-    question = st.session_state.pop(
-        "pending_question"
-    )
 
+if question and question.strip():
 
-if question:
+    question = question.strip()
 
-    conversation_id = st.session_state.conversation_id
+    try:
+        update_conversation_title(
+            conversation_id,
+            question,
+        )
 
-    update_title(
-        conversation_id,
-        question,
-    )
+        save_message(
+            conversation_id,
+            "user",
+            question,
+        )
 
-    save_message(
-        conversation_id,
-        "user",
-        question,
-    )
+        result = generate_chatbot_response(
+            question,
+            loading_placeholder,
+        )
 
-    with st.spinner(
-        "Hinahanap ang kahulugan..."
-    ):
+        save_message(
+            conversation_id,
+            "assistant",
+            result["answer"],
+            result.get("retrieved", []),
+        )
 
-        result = generate_response(question)
+    except Exception:
+        logger.exception("Unexpected chatbot error.")
 
-    save_message(
-        conversation_id,
-        "assistant",
-        result["answer"],
-        result.get("retrieved", []),
-    )
+        loading_placeholder.empty()
+
+        save_message(
+            conversation_id,
+            "assistant",
+            ERROR_MESSAGE,
+        )
 
     st.rerun()
 
@@ -847,9 +872,10 @@ if question:
 
 st.markdown(
     """
-<div class="app-footer">
-LalimSalita · Filipino Vocabulary Learning Companion
-</div>
+    <div class="app-footer">
+        LalimSalita · Filipino Vocabulary
+        Learning Companion
+    </div>
     """,
     unsafe_allow_html=True,
 )
