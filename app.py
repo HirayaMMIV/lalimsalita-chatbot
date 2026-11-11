@@ -5,6 +5,7 @@ import uuid
 import html
 import sqlite3
 import logging
+import base64
 from pathlib import Path
 from datetime import datetime
 
@@ -17,15 +18,16 @@ from rag_backend import rag_query, FALLBACK
 # PAGE CONFIGURATION
 # ============================================================
 
+BASE_DIR = Path(__file__).resolve().parent
+LOGO_PATH = BASE_DIR / "lalimsalita_logo.png"
+DB_PATH = BASE_DIR / "lalimsalita_chats.db"
+
 st.set_page_config(
     page_title="LalimSalita",
-    page_icon="📖",
+    page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "💬",
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "lalimsalita_chats.db"
 
 logger = logging.getLogger("lalimsalita.app")
 
@@ -34,6 +36,42 @@ WELCOME_QUESTIONS = [
     "Ano ang ibig sabihin ng dalamhati?",
     "Ano ang kahulugan ng nagpipighati?",
 ]
+
+
+# ============================================================
+# LOGO HELPERS
+# ============================================================
+
+def get_logo_data_uri():
+    if not LOGO_PATH.exists():
+        return None
+
+    encoded = base64.b64encode(
+        LOGO_PATH.read_bytes()
+    ).decode("ascii")
+
+    return f"data:image/png;base64,{encoded}"
+
+
+LOGO_DATA_URI = get_logo_data_uri()
+
+
+def get_assistant_avatar():
+    if LOGO_PATH.exists():
+        return str(LOGO_PATH)
+
+    return "💬"
+
+
+def get_sidebar_logo_html():
+    if LOGO_DATA_URI:
+        return (
+            f'<img src="{LOGO_DATA_URI}" '
+            'class="sidebar-logo" '
+            'alt="LalimSalita logo">'
+        )
+
+    return ""
 
 
 # ============================================================
@@ -46,6 +84,7 @@ def get_connection():
         timeout=20,
         check_same_thread=False,
     )
+
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -72,7 +111,6 @@ def initialize_database():
             )
         """)
 
-        # Support older versions of the messages table.
         columns = {
             row["name"]
             for row in conn.execute(
@@ -81,12 +119,10 @@ def initialize_database():
         }
 
         if "retrieved_json" not in columns:
-            conn.execute(
-                """
+            conn.execute("""
                 ALTER TABLE messages
                 ADD COLUMN retrieved_json TEXT DEFAULT '[]'
-                """
-            )
+            """)
 
         conn.commit()
 
@@ -107,6 +143,7 @@ def create_conversation():
                 datetime.now().isoformat(),
             ),
         )
+
         conn.commit()
 
     return conversation_id
@@ -114,13 +151,11 @@ def create_conversation():
 
 def list_conversations():
     with get_connection() as conn:
-        return conn.execute(
-            """
+        return conn.execute("""
             SELECT id, title, created_at
             FROM conversations
             ORDER BY created_at DESC
-            """
-        ).fetchall()
+        """).fetchall()
 
 
 def load_messages(conversation_id):
@@ -190,6 +225,7 @@ def save_message(
                 datetime.now().isoformat(),
             ),
         )
+
         conn.commit()
 
 
@@ -206,12 +242,12 @@ def update_conversation_title(
             """,
             (title[:80], conversation_id),
         )
+
         conn.commit()
 
 
 def delete_conversation(conversation_id):
     with get_connection() as conn:
-
         conn.execute(
             """
             DELETE FROM messages
@@ -248,9 +284,7 @@ if "delete_target" not in st.session_state:
 
 
 def start_new_conversation():
-    st.session_state.conversation_id = (
-        create_conversation()
-    )
+    st.session_state.conversation_id = create_conversation()
     st.session_state.pending_question = None
     st.session_state.delete_target = None
 
@@ -282,9 +316,7 @@ def confirm_delete():
 st.markdown("""
 <style>
 
-/* =========================================================
-   GLOBAL
-   ========================================================= */
+/* GLOBAL */
 
 :root {
     --purple: #6952e8;
@@ -321,9 +353,7 @@ header[data-testid="stHeader"] {
 }
 
 
-/* =========================================================
-   SIDEBAR
-   ========================================================= */
+/* SIDEBAR */
 
 [data-testid="stSidebar"] {
     background: #f3efff;
@@ -340,6 +370,19 @@ header[data-testid="stHeader"] {
     margin-bottom: 22px;
 }
 
+.sidebar-brand-top {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.sidebar-logo {
+    width: 48px;
+    height: 48px;
+    object-fit: contain;
+    flex-shrink: 0;
+}
+
 .sidebar-brand h2 {
     color: #4d359f !important;
     font-size: 25px;
@@ -350,7 +393,7 @@ header[data-testid="stHeader"] {
 .sidebar-brand p {
     color: #8175a2 !important;
     font-size: 12px;
-    margin-top: 6px;
+    margin-top: 8px;
 }
 
 .sidebar-heading {
@@ -382,9 +425,7 @@ header[data-testid="stHeader"] {
 }
 
 
-/* =========================================================
-   HEADER
-   ========================================================= */
+/* HEADER */
 
 .chat-brand {
     padding: 4px 0 22px;
@@ -406,9 +447,7 @@ header[data-testid="stHeader"] {
 }
 
 
-/* =========================================================
-   USER CHAT - RIGHT SIDE
-   ========================================================= */
+/* USER MESSAGES - RIGHT */
 
 .user-message-row {
     display: flex;
@@ -438,9 +477,7 @@ header[data-testid="stHeader"] {
 }
 
 
-/* =========================================================
-   ASSISTANT CHAT - LEFT SIDE
-   ========================================================= */
+/* ASSISTANT MESSAGES - LEFT */
 
 [data-testid="stChatMessage"] {
     background: transparent !important;
@@ -470,10 +507,16 @@ header[data-testid="stHeader"] {
     border-radius: 11px !important;
 }
 
+/* Keep the official logo visible inside the avatar */
 
-/* =========================================================
-   RETRIEVED SOURCES
-   ========================================================= */
+[data-testid="stChatMessageAvatarAssistant"] img {
+    width: 34px !important;
+    height: 34px !important;
+    object-fit: contain !important;
+}
+
+
+/* RETRIEVED SOURCES */
 
 [data-testid="stExpander"] {
     border: 1px solid #ded5f6 !important;
@@ -487,9 +530,7 @@ header[data-testid="stHeader"] {
 }
 
 
-/* =========================================================
-   WELCOME SCREEN
-   ========================================================= */
+/* WELCOME */
 
 .welcome {
     text-align: center;
@@ -508,9 +549,7 @@ header[data-testid="stHeader"] {
 }
 
 
-/* =========================================================
-   FIXED BOTTOM CHAT INPUT
-   ========================================================= */
+/* FIXED CHAT INPUT */
 
 [data-testid="stBottom"] {
     background: linear-gradient(
@@ -584,9 +623,7 @@ header[data-testid="stHeader"] {
 }
 
 
-/* =========================================================
-   MOBILE
-   ========================================================= */
+/* MOBILE */
 
 @media (max-width: 768px) {
 
@@ -633,10 +670,15 @@ header[data-testid="stHeader"] {
 
 with st.sidebar:
 
+    logo_html = get_sidebar_logo_html()
+
     st.markdown(
-        """
+        f"""
         <div class="sidebar-brand">
-            <h2>📖 LalimSalita</h2>
+            <div class="sidebar-brand-top">
+                {logo_html}
+                <h2>LalimSalita</h2>
+            </div>
             <p>Kasama mo sa pag-unawa ng Filipino</p>
         </div>
         """,
@@ -849,9 +891,6 @@ def display_message(message):
 
     if role == "user":
 
-        # Render user messages on the RIGHT.
-        # This avoids Streamlit avatar CSS selector issues.
-
         safe_content = html.escape(
             message["content"]
         ).replace("\n", "<br>")
@@ -869,11 +908,9 @@ def display_message(message):
 
     else:
 
-        # Assistant messages remain on the LEFT.
-
         with st.chat_message(
             "assistant",
-            avatar="📖",
+            avatar=get_assistant_avatar(),
         ):
 
             st.markdown(
@@ -971,24 +1008,21 @@ def process_question(question):
             question,
         )
 
-    # Save user question.
     save_message(
         conversation_id,
         "user",
         question,
     )
 
-    # Display user question immediately.
     display_message({
         "role": "user",
         "content": question,
         "retrieved": [],
     })
 
-    # Generate and display assistant response.
     with st.chat_message(
         "assistant",
-        avatar="📖",
+        avatar=get_assistant_avatar(),
     ):
 
         with st.status(
@@ -1015,7 +1049,6 @@ def process_question(question):
 
         display_sources(retrieved)
 
-    # Save assistant response.
     save_message(
         conversation_id,
         "assistant",
@@ -1031,7 +1064,6 @@ def process_question(question):
 # ============================================================
 
 current_id = st.session_state.conversation_id
-
 messages = load_messages(current_id)
 
 if messages:
@@ -1099,7 +1131,6 @@ pending = st.session_state.pending_question
 if pending:
 
     st.session_state.pending_question = None
-
     process_question(pending)
 
 elif question:
