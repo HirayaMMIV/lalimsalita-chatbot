@@ -2,16 +2,19 @@
 import os
 import json
 import uuid
+import html
 import sqlite3
 import logging
 from pathlib import Path
 from datetime import datetime
 
 import streamlit as st
+
 from rag_backend import rag_query, FALLBACK
 
+
 # ============================================================
-# CONFIGURATION
+# PAGE CONFIGURATION
 # ============================================================
 
 st.set_page_config(
@@ -32,23 +35,25 @@ WELCOME_QUESTIONS = [
     "Ano ang kahulugan ng nagpipighati?",
 ]
 
+
 # ============================================================
 # DATABASE
 # ============================================================
 
 def get_connection():
-    connection = sqlite3.connect(
+    conn = sqlite3.connect(
         str(DB_PATH),
         timeout=20,
         check_same_thread=False,
     )
-    connection.row_factory = sqlite3.Row
-    return connection
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def initialize_database():
-    with get_connection() as connection:
-        connection.execute("""
+    with get_connection() as conn:
+
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -56,41 +61,41 @@ def initialize_database():
             )
         """)
 
-        connection.execute("""
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 conversation_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 retrieved_json TEXT DEFAULT '[]',
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (conversation_id)
-                    REFERENCES conversations(id)
+                created_at TEXT NOT NULL
             )
         """)
 
-        # Support older databases without retrieved_json.
+        # Support older versions of the messages table.
         columns = {
             row["name"]
-            for row in connection.execute(
+            for row in conn.execute(
                 "PRAGMA table_info(messages)"
             ).fetchall()
         }
 
         if "retrieved_json" not in columns:
-            connection.execute(
-                "ALTER TABLE messages "
-                "ADD COLUMN retrieved_json TEXT DEFAULT '[]'"
+            conn.execute(
+                """
+                ALTER TABLE messages
+                ADD COLUMN retrieved_json TEXT DEFAULT '[]'
+                """
             )
 
-        connection.commit()
+        conn.commit()
 
 
 def create_conversation():
     conversation_id = str(uuid.uuid4())
 
-    with get_connection() as connection:
-        connection.execute(
+    with get_connection() as conn:
+        conn.execute(
             """
             INSERT INTO conversations
                 (id, title, created_at)
@@ -102,14 +107,14 @@ def create_conversation():
                 datetime.now().isoformat(),
             ),
         )
-        connection.commit()
+        conn.commit()
 
     return conversation_id
 
 
 def list_conversations():
-    with get_connection() as connection:
-        return connection.execute(
+    with get_connection() as conn:
+        return conn.execute(
             """
             SELECT id, title, created_at
             FROM conversations
@@ -122,8 +127,8 @@ def load_messages(conversation_id):
     if not conversation_id:
         return []
 
-    with get_connection() as connection:
-        rows = connection.execute(
+    with get_connection() as conn:
+        rows = conn.execute(
             """
             SELECT role, content, retrieved_json
             FROM messages
@@ -140,7 +145,7 @@ def load_messages(conversation_id):
             retrieved = json.loads(
                 row["retrieved_json"] or "[]"
             )
-        except (json.JSONDecodeError, TypeError):
+        except (TypeError, json.JSONDecodeError):
             retrieved = []
 
         messages.append({
@@ -164,8 +169,8 @@ def save_message(
         default=str,
     )
 
-    with get_connection() as connection:
-        connection.execute(
+    with get_connection() as conn:
+        conn.execute(
             """
             INSERT INTO messages
                 (
@@ -185,15 +190,15 @@ def save_message(
                 datetime.now().isoformat(),
             ),
         )
-        connection.commit()
+        conn.commit()
 
 
 def update_conversation_title(
     conversation_id,
     title,
 ):
-    with get_connection() as connection:
-        connection.execute(
+    with get_connection() as conn:
+        conn.execute(
             """
             UPDATE conversations
             SET title = ?
@@ -201,12 +206,13 @@ def update_conversation_title(
             """,
             (title[:80], conversation_id),
         )
-        connection.commit()
+        conn.commit()
 
 
 def delete_conversation(conversation_id):
-    with get_connection() as connection:
-        connection.execute(
+    with get_connection() as conn:
+
+        conn.execute(
             """
             DELETE FROM messages
             WHERE conversation_id = ?
@@ -214,7 +220,7 @@ def delete_conversation(conversation_id):
             (conversation_id,),
         )
 
-        connection.execute(
+        conn.execute(
             """
             DELETE FROM conversations
             WHERE id = ?
@@ -222,7 +228,7 @@ def delete_conversation(conversation_id):
             (conversation_id,),
         )
 
-        connection.commit()
+        conn.commit()
 
 
 # ============================================================
@@ -232,11 +238,7 @@ def delete_conversation(conversation_id):
 initialize_database()
 
 if "conversation_id" not in st.session_state:
-    existing = list_conversations()
-
-    st.session_state.conversation_id = (
-        existing[0]["id"] if existing else None
-    )
+    st.session_state.conversation_id = None
 
 if "pending_question" not in st.session_state:
     st.session_state.pending_question = None
@@ -259,10 +261,6 @@ def open_conversation(conversation_id):
     st.session_state.delete_target = None
 
 
-def request_delete(conversation_id):
-    st.session_state.delete_target = conversation_id
-
-
 def confirm_delete():
     target = st.session_state.delete_target
 
@@ -272,23 +270,22 @@ def confirm_delete():
     delete_conversation(target)
 
     if st.session_state.conversation_id == target:
-        remaining = list_conversations()
-
-        st.session_state.conversation_id = (
-            remaining[0]["id"] if remaining else None
-        )
+        st.session_state.conversation_id = None
 
     st.session_state.delete_target = None
 
 
 # ============================================================
-# CSS / DESIGN
+# CSS
 # ============================================================
 
 st.markdown("""
 <style>
 
-/* Overall theme */
+/* =========================================================
+   GLOBAL
+   ========================================================= */
+
 :root {
     --purple: #6952e8;
     --purple-dark: #4d359f;
@@ -309,7 +306,6 @@ st.markdown("""
     color: var(--text);
 }
 
-/* Remove Streamlit top decoration */
 [data-testid="stDecoration"] {
     display: none;
 }
@@ -318,14 +314,17 @@ header[data-testid="stHeader"] {
     background: transparent;
 }
 
-/* Main content */
 .block-container {
     max-width: 1000px;
     padding-top: 1.6rem;
     padding-bottom: 7rem;
 }
 
-/* Sidebar */
+
+/* =========================================================
+   SIDEBAR
+   ========================================================= */
+
 [data-testid="stSidebar"] {
     background: #f3efff;
     border-right: 1px solid #e3dcfa;
@@ -363,9 +362,8 @@ header[data-testid="stHeader"] {
     text-transform: uppercase;
 }
 
-/* Sidebar buttons */
 [data-testid="stSidebar"] .stButton > button {
-    background: white !important;
+    background: #ffffff !important;
     border: 1px solid #e1d9ff !important;
     border-radius: 12px !important;
     color: #4d359f !important;
@@ -383,16 +381,11 @@ header[data-testid="stHeader"] {
     color: inherit !important;
 }
 
-/* Conversation rows */
-.history-row {
-    margin-bottom: 4px;
-}
 
-[data-testid="stSidebar"] [data-testid="stHorizontalBlock"] {
-    align-items: center;
-}
+/* =========================================================
+   HEADER
+   ========================================================= */
 
-/* Chat header */
 .chat-brand {
     padding: 4px 0 22px;
     border-bottom: 1px solid #ded7ed;
@@ -412,74 +405,64 @@ header[data-testid="stHeader"] {
     margin: 4px 0 0;
 }
 
-/* Chat messages */
+
+/* =========================================================
+   USER CHAT - RIGHT SIDE
+   ========================================================= */
+
+.user-message-row {
+    display: flex;
+    justify-content: flex-end;
+    width: 100%;
+    margin: 16px 0 22px;
+}
+
+.user-message-bubble {
+    display: inline-block;
+    width: fit-content;
+    max-width: 75%;
+    padding: 12px 18px;
+    background: #6952e8;
+    color: #ffffff !important;
+    border-radius: 18px 18px 5px 18px;
+    font-size: 15px;
+    line-height: 1.65;
+    text-align: left;
+    overflow-wrap: anywhere;
+    box-shadow: 0 3px 12px rgba(105, 82, 232, 0.12);
+}
+
+.user-message-bubble,
+.user-message-bubble * {
+    color: #ffffff !important;
+}
+
+
+/* =========================================================
+   ASSISTANT CHAT - LEFT SIDE
+   ========================================================= */
+
 [data-testid="stChatMessage"] {
     background: transparent !important;
     border: none !important;
-    padding: 10px 0 !important;
+    padding: 8px 0 !important;
+    margin-bottom: 12px;
 }
 
-/* Assistant message alignment */
-[data-testid="stChatMessage"]:has(
-    [data-testid="chatAvatarIcon-assistant"]
-) {
-    max-width: 90%;
-    margin-right: auto;
-}
-
-/* User message alignment */
-[data-testid="stChatMessage"]:has(
-    [data-testid="chatAvatarIcon-user"]
-) {
-    max-width: 82%;
-    margin-left: auto;
-    flex-direction: row-reverse;
-}
-
-/* User bubble */
-[data-testid="stChatMessage"]:has(
-    [data-testid="chatAvatarIcon-user"]
-) [data-testid="stChatMessageContent"] {
-    background: #6952e8 !important;
-    color: #ffffff !important;
-    border-radius: 18px 18px 5px 18px;
-    padding: 12px 17px;
-    width: fit-content;
-    margin-left: auto;
-}
-
-/* White text in user bubble */
-[data-testid="stChatMessage"]:has(
-    [data-testid="chatAvatarIcon-user"]
-) [data-testid="stChatMessageContent"] * {
-    color: #ffffff !important;
-}
-
-/* Assistant bubble */
-[data-testid="stChatMessage"]:has(
-    [data-testid="chatAvatarIcon-assistant"]
-) [data-testid="stChatMessageContent"] {
+[data-testid="stChatMessageContent"] {
     background: #ffffff !important;
-    color: #302653 !important;
     border: 1px solid #ece6ff;
     border-radius: 5px 18px 18px 18px;
     padding: 14px 18px;
+    color: #302653 !important;
     box-shadow: 0 3px 14px rgba(70, 45, 120, 0.04);
 }
 
-[data-testid="stChatMessage"]:has(
-    [data-testid="chatAvatarIcon-assistant"]
-) [data-testid="stChatMessageContent"] p,
-[data-testid="stChatMessage"]:has(
-    [data-testid="chatAvatarIcon-assistant"]
-) [data-testid="stChatMessageContent"] li {
+[data-testid="stChatMessageContent"] p,
+[data-testid="stChatMessageContent"] li,
+[data-testid="stChatMessageContent"] strong,
+[data-testid="stChatMessageContent"] em {
     color: #302653 !important;
-}
-
-/* Chat avatars */
-[data-testid="stChatMessageAvatarUser"] {
-    background: #e89aa6 !important;
-    border-radius: 11px !important;
 }
 
 [data-testid="stChatMessageAvatarAssistant"] {
@@ -487,57 +470,11 @@ header[data-testid="stHeader"] {
     border-radius: 11px !important;
 }
 
-/* Fixed bottom input */
-[data-testid="stBottom"] {
-    background: linear-gradient(
-        to bottom,
-        transparent,
-        #fbfaff 18%
-    ) !important;
-    padding-top: 12px;
-}
 
-[data-testid="stBottom"] > div {
-    background: transparent !important;
-}
+/* =========================================================
+   RETRIEVED SOURCES
+   ========================================================= */
 
-[data-testid="stChatInput"] {
-    background: #f0ebff !important;
-    border: 1px solid #ded4ff !important;
-    border-radius: 18px !important;
-    padding: 7px !important;
-    box-shadow: 0 8px 24px rgba(80, 55, 140, 0.07);
-}
-
-[data-testid="stChatInput"] textarea {
-    background: #ffffff !important;
-    color: #302653 !important;
-    -webkit-text-fill-color: #302653 !important;
-    border-radius: 10px !important;
-}
-
-[data-testid="stChatInput"] textarea::placeholder {
-    color: #8b7cae !important;
-    -webkit-text-fill-color: #8b7cae !important;
-}
-
-/* Keep send button purple */
-[data-testid="stChatInput"] button {
-    background: #6952e8 !important;
-    color: #ffffff !important;
-    border-radius: 10px !important;
-}
-
-[data-testid="stChatInput"] button:hover {
-    background: #5741cb !important;
-}
-
-[data-testid="stChatInput"] button svg {
-    color: #ffffff !important;
-    fill: none;
-}
-
-/* Source expander */
 [data-testid="stExpander"] {
     border: 1px solid #ded5f6 !important;
     border-radius: 11px !important;
@@ -549,7 +486,11 @@ header[data-testid="stHeader"] {
     color: #4d359f !important;
 }
 
-/* Welcome */
+
+/* =========================================================
+   WELCOME SCREEN
+   ========================================================= */
+
 .welcome {
     text-align: center;
     margin: 65px auto 24px;
@@ -566,20 +507,89 @@ header[data-testid="stHeader"] {
     font-size: 14px;
 }
 
-/* Suggested questions */
-.stButton > button[kind="secondary"] {
-    border-radius: 12px;
+
+/* =========================================================
+   FIXED BOTTOM CHAT INPUT
+   ========================================================= */
+
+[data-testid="stBottom"] {
+    background: linear-gradient(
+        to bottom,
+        transparent,
+        #fbfaff 25%
+    ) !important;
+    padding: 0 !important;
 }
 
-/* General text */
-.stMarkdown,
-.stMarkdown p,
-.stMarkdown li {
-    line-height: 1.7;
+[data-testid="stBottom"] > div {
+    max-width: 900px !important;
+    margin: 0 auto !important;
+    padding: 8px 12px 12px !important;
+    background: transparent !important;
 }
 
-/* Mobile */
+[data-testid="stChatInput"] {
+    min-height: 52px !important;
+    background: #f0ebff !important;
+    border: 1px solid #ded4ff !important;
+    border-radius: 14px !important;
+    padding: 4px 6px !important;
+    box-shadow: 0 5px 18px rgba(80, 55, 140, 0.06);
+}
+
+[data-testid="stChatInput"] textarea {
+    min-height: 36px !important;
+    max-height: 100px !important;
+    padding: 8px 12px !important;
+    color: #302653 !important;
+    -webkit-text-fill-color: #302653 !important;
+    background: #ffffff !important;
+    border-radius: 9px !important;
+    font-size: 14px !important;
+}
+
+[data-testid="stChatInput"] textarea::placeholder {
+    color: #8b7cae !important;
+    -webkit-text-fill-color: #8b7cae !important;
+}
+
+[data-testid="stChatInput"] button {
+    width: 90px !important;
+    min-width: 90px !important;
+    height: 38px !important;
+    background: #6952e8 !important;
+    border-radius: 10px !important;
+    color: #ffffff !important;
+    position: relative !important;
+}
+
+[data-testid="stChatInput"] button:hover {
+    background: #5741cb !important;
+}
+
+[data-testid="stChatInput"] button svg {
+    display: none !important;
+}
+
+[data-testid="stChatInput"] button::after {
+    content: "Ipadala";
+    color: #ffffff !important;
+    font-size: 13px !important;
+    font-weight: 600;
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+
+/* =========================================================
+   MOBILE
+   ========================================================= */
+
 @media (max-width: 768px) {
+
     .block-container {
         padding-top: 1rem;
         padding-bottom: 6rem;
@@ -589,8 +599,10 @@ header[data-testid="stHeader"] {
         font-size: 25px;
     }
 
-    [data-testid="stChatMessage"] {
-        max-width: 100% !important;
+    .user-message-bubble {
+        max-width: 90%;
+        font-size: 14px;
+        padding: 10px 14px;
     }
 
     .welcome {
@@ -599,6 +611,15 @@ header[data-testid="stHeader"] {
 
     .welcome h2 {
         font-size: 24px;
+    }
+
+    [data-testid="stBottom"] > div {
+        padding: 6px 8px 10px !important;
+    }
+
+    [data-testid="stChatInput"] button {
+        width: 76px !important;
+        min-width: 76px !important;
     }
 }
 
@@ -658,6 +679,7 @@ with st.sidebar:
         )
 
         with col_title:
+
             display_title = (
                 title[:32] + "..."
                 if len(title) > 35
@@ -674,6 +696,7 @@ with st.sidebar:
                 st.rerun()
 
         with col_delete:
+
             if st.button(
                 "⋮",
                 key=f"menu_{conversation_id}",
@@ -686,16 +709,19 @@ with st.sidebar:
                 ):
                     st.session_state.delete_target = None
                 else:
-                    request_delete(conversation_id)
+                    st.session_state.delete_target = (
+                        conversation_id
+                    )
 
                 st.rerun()
 
-        # Delete confirmation
         if (
             st.session_state.delete_target
             == conversation_id
         ):
+
             with st.container(border=True):
+
                 st.markdown(
                     "**Burahin ang usapang ito?**"
                 )
@@ -707,16 +733,17 @@ with st.sidebar:
                 yes_col, no_col = st.columns(2)
 
                 with yes_col:
+
                     if st.button(
                         "Burahin",
                         key=f"confirm_{conversation_id}",
-                        type="primary",
                         use_container_width=True,
                     ):
                         confirm_delete()
                         st.rerun()
 
                 with no_col:
+
                     if st.button(
                         "Kanselahin",
                         key=f"cancel_{conversation_id}",
@@ -746,16 +773,12 @@ st.markdown(
 # ============================================================
 
 def normalize_response(result):
-    """
-    Supports a backend returning either:
-    - a string
-    - a dictionary containing answer/retrieved
-    """
 
     if isinstance(result, str):
         return result, []
 
     if isinstance(result, dict):
+
         answer = (
             result.get("answer")
             or result.get("response")
@@ -775,6 +798,7 @@ def normalize_response(result):
 
 
 def display_sources(retrieved):
+
     if not retrieved:
         return
 
@@ -782,24 +806,27 @@ def display_sources(retrieved):
         "Retrieved source chunks",
         expanded=False,
     ):
+
         for index, item in enumerate(
             retrieved,
             start=1,
         ):
+
             if not isinstance(item, dict):
                 st.write(str(item))
                 continue
 
             page = item.get("page", "N/A")
+
             match_type = item.get(
                 "match_type",
                 "semantic",
             )
+
             text = item.get("text", "")
 
             st.markdown(
-                f"**Source {index} — "
-                f"Page {page}**"
+                f"**Source {index} — Page {page}**"
             )
 
             st.caption(
@@ -812,31 +839,75 @@ def display_sources(retrieved):
                 st.divider()
 
 
+# ============================================================
+# CHAT MESSAGE DISPLAY
+# ============================================================
+
 def display_message(message):
+
     role = message["role"]
 
-    avatar = "👤" if role == "user" else "📖"
+    if role == "user":
 
-    with st.chat_message(
-        role,
-        avatar=avatar,
-    ):
-        st.markdown(message["content"])
+        # Render user messages on the RIGHT.
+        # This avoids Streamlit avatar CSS selector issues.
 
-        if role == "assistant":
+        safe_content = html.escape(
+            message["content"]
+        ).replace("\n", "<br>")
+
+        st.markdown(
+            f"""
+            <div class="user-message-row">
+                <div class="user-message-bubble">
+                    {safe_content}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    else:
+
+        # Assistant messages remain on the LEFT.
+
+        with st.chat_message(
+            "assistant",
+            avatar="📖",
+        ):
+
+            st.markdown(
+                message["content"]
+            )
+
             display_sources(
                 message.get("retrieved", [])
             )
 
 
+# ============================================================
+# GENERATE RESPONSE
+# ============================================================
+
 def generate_answer(question):
-    api_key = (
-        os.getenv("GROQ_API_KEY")
-        or st.secrets.get("GROQ_API_KEY", "")
-    )
+
+    api_key = os.getenv("GROQ_API_KEY")
 
     if not api_key:
-        logger.error("GROQ_API_KEY is missing.")
+        try:
+            api_key = st.secrets.get(
+                "GROQ_API_KEY",
+                "",
+            )
+        except Exception:
+            api_key = ""
+
+    if not api_key:
+
+        logger.error(
+            "GROQ_API_KEY is missing."
+        )
+
         return (
             "Pansamantalang hindi available ang "
             "serbisyo ng chatbot. "
@@ -845,6 +916,7 @@ def generate_answer(question):
         )
 
     try:
+
         result = rag_query(
             question,
             api_key=api_key,
@@ -853,6 +925,7 @@ def generate_answer(question):
         return normalize_response(result)
 
     except Exception:
+
         logger.exception(
             "Chatbot request failed."
         )
@@ -864,7 +937,12 @@ def generate_answer(question):
         )
 
 
+# ============================================================
+# PROCESS QUESTION
+# ============================================================
+
 def process_question(question):
+
     question = (question or "").strip()
 
     if not question:
@@ -875,7 +953,9 @@ def process_question(question):
     )
 
     if not conversation_id:
+
         conversation_id = create_conversation()
+
         st.session_state.conversation_id = (
             conversation_id
         )
@@ -884,31 +964,33 @@ def process_question(question):
         conversation_id
     )
 
-    # Set title based on first user question.
     if not previous_messages:
+
         update_conversation_title(
             conversation_id,
             question,
         )
 
+    # Save user question.
     save_message(
         conversation_id,
         "user",
         question,
     )
 
-    # Display question immediately.
+    # Display user question immediately.
     display_message({
         "role": "user",
         "content": question,
         "retrieved": [],
     })
 
-    # Generate answer with progress indicator.
+    # Generate and display assistant response.
     with st.chat_message(
         "assistant",
         avatar="📖",
     ):
+
         with st.status(
             "Hinahanap ang kahulugan...",
             expanded=False,
@@ -930,8 +1012,10 @@ def process_question(question):
             )
 
         st.markdown(answer)
+
         display_sources(retrieved)
 
+    # Save assistant response.
     save_message(
         conversation_id,
         "assistant",
@@ -943,7 +1027,7 @@ def process_question(question):
 
 
 # ============================================================
-# CONVERSATION DISPLAY
+# DISPLAY CONVERSATION
 # ============================================================
 
 current_id = st.session_state.conversation_id
@@ -970,11 +1054,15 @@ else:
         unsafe_allow_html=True,
     )
 
-    cols = st.columns(3, gap="small")
+    cols = st.columns(
+        3,
+        gap="small",
+    )
 
     for index, suggested in enumerate(
         WELCOME_QUESTIONS
     ):
+
         with cols[index]:
 
             label = (
@@ -989,9 +1077,11 @@ else:
                 use_container_width=True,
                 help=suggested,
             ):
+
                 st.session_state.pending_question = (
                     suggested
                 )
+
                 st.rerun()
 
 
@@ -1007,8 +1097,11 @@ question = st.chat_input(
 pending = st.session_state.pending_question
 
 if pending:
+
     st.session_state.pending_question = None
+
     process_question(pending)
 
 elif question:
+
     process_question(question)
