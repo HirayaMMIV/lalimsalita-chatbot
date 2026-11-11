@@ -3,6 +3,7 @@ import os
 import json
 import uuid
 import html
+import re
 import sqlite3
 import logging
 import base64
@@ -507,8 +508,6 @@ header[data-testid="stHeader"] {
     border-radius: 11px !important;
 }
 
-/* Keep the official logo visible inside the avatar */
-
 [data-testid="stChatMessageAvatarAssistant"] img {
     width: 34px !important;
     height: 34px !important;
@@ -549,7 +548,7 @@ header[data-testid="stHeader"] {
 }
 
 
-/* FIXED CHAT INPUT */
+/* FIXED CHAT INPUT - MATCH CHAT WIDTH */
 
 [data-testid="stBottom"] {
     background: linear-gradient(
@@ -561,9 +560,10 @@ header[data-testid="stHeader"] {
 }
 
 [data-testid="stBottom"] > div {
+    width: calc(100% - 3rem) !important;
     max-width: 900px !important;
     margin: 0 auto !important;
-    padding: 8px 12px 12px !important;
+    padding: 8px 0 12px !important;
     background: transparent !important;
 }
 
@@ -651,7 +651,8 @@ header[data-testid="stHeader"] {
     }
 
     [data-testid="stBottom"] > div {
-        padding: 6px 8px 10px !important;
+        width: calc(100% - 1rem) !important;
+        padding: 6px 0 10px !important;
     }
 
     [data-testid="stChatInput"] button {
@@ -839,6 +840,81 @@ def normalize_response(result):
     return FALLBACK, []
 
 
+# ============================================================
+# FORMAT RETRIEVED VOCABULARY CHUNKS
+# ============================================================
+
+def format_retrieved_chunk(raw_text):
+    """
+    Format vocabulary entries for display only.
+
+    The original retrieved text is not modified in
+    the database or RAG backend.
+    """
+
+    text = str(raw_text or "").strip()
+
+    if not text:
+        return "Walang available na teksto."
+
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Remove any existing Markdown markers around labels.
+    text = re.sub(
+        r"\*{1,2}\s*(VOCABULARY\s+ENTRY\s+\d+)\s*\*{1,2}",
+        r"\1",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Vocabulary entry headings.
+    text = re.sub(
+        r"\bVOCABULARY\s+ENTRY\s+(\d+)\b",
+        r"\n\n**Vocabulary Entry \1**\n\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Match the longest labels first.
+    field_labels = [
+        ("CONTEXTUAL_MEANING", "Contextual Meaning"),
+        ("PART_OF_SPEECH", "Part of Speech"),
+        ("DEFINITION", "Definition"),
+        ("STANZA", "Stanza"),
+        ("SOURCE", "Source"),
+        ("WORD", "Word"),
+    ]
+
+    for field, label in field_labels:
+        text = re.sub(
+            rf"\b{re.escape(field)}\s*:",
+            f"\n\n**{label}:** ",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+    # Lesson headings.
+    text = re.sub(
+        r"\b(Aralin\s+\d+)\b",
+        r"\n\n**\1**\n\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove excess blank lines.
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text,
+    )
+
+    return text.strip()
+
+
+# ============================================================
+# RETRIEVED SOURCE DISPLAY
+# ============================================================
+
 def display_sources(retrieved):
 
     if not retrieved:
@@ -855,7 +931,9 @@ def display_sources(retrieved):
         ):
 
             if not isinstance(item, dict):
-                st.write(str(item))
+                st.markdown(
+                    format_retrieved_chunk(item)
+                )
                 continue
 
             page = item.get("page", "N/A")
@@ -865,7 +943,10 @@ def display_sources(retrieved):
                 "semantic",
             )
 
-            text = item.get("text", "")
+            chunk_text = item.get(
+                "text",
+                "",
+            )
 
             st.markdown(
                 f"**Source {index} — Page {page}**"
@@ -875,7 +956,9 @@ def display_sources(retrieved):
                 f"Retrieval: {match_type}"
             )
 
-            st.write(text)
+            st.markdown(
+                format_retrieved_chunk(chunk_text)
+            )
 
             if index < len(retrieved):
                 st.divider()
