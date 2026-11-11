@@ -29,11 +29,41 @@ logger = logging.getLogger("lalimsalita.app")
 
 st.set_page_config(
     page_title="LalimSalita",
-    page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "L",
+    page_icon="📖",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
+st.markdown(
+    """
+    <style>
+    /* Hide Streamlit's top header */
+    header[data-testid="stHeader"] {
+        display: none !important;
+    }
+
+    /* Hide Streamlit's toolbar */
+    [data-testid="stToolbar"] {
+        display: none !important;
+    }
+
+    /* Hide Streamlit's decoration bar */
+    [data-testid="stDecoration"] {
+        display: none !important;
+    }
+
+    /* Remove extra space above the chatbot */
+    .block-container {
+        padding-top: 1.5rem !important;
+    }
+
+    /* Keep sidebar content positioned correctly */
+    [data-testid="stSidebar"] .block-container {
+        padding-top: 1.5rem !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ============================================================
 # DATABASE
