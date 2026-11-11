@@ -15,7 +15,7 @@ from rag_backend import rag_query, FALLBACK
 
 
 # ============================================================
-# CONFIGURATION
+# PAGE CONFIGURATION
 # ============================================================
 
 st.set_page_config(
@@ -74,7 +74,7 @@ def initialize_database():
             )
         """)
 
-        # Support older local databases.
+        # Compatibility with older databases
         columns = {
             row["name"]
             for row in connection.execute(
@@ -232,34 +232,45 @@ if "pending_question" not in st.session_state:
 
 
 # ============================================================
-# CSS
+# COMPLETE CSS - LIGHT THEME AND VISIBILITY FIX
 # ============================================================
 
 st.markdown(
     """
     <style>
 
-    /* Main application */
+    /* --------------------------------------------------------
+       APPLICATION BACKGROUND
+       -------------------------------------------------------- */
+
+    html,
+    body,
+    .stApp,
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"] {
+        background-color: #FAF8FF !important;
+        color: #35285D !important;
+    }
+
     .stApp {
         background:
             radial-gradient(
                 ellipse at top right,
-                #f0eaff 0%,
-                #faf8ff 45%,
-                #fcfaff 100%
-            );
-        color: #35285d;
+                #F0EAFF 0%,
+                #FAF8FF 45%,
+                #FCFAFF 100%
+            ) !important;
     }
 
-    /* Remove Streamlit's black header */
+    /* --------------------------------------------------------
+       HIDE STREAMLIT HEADER
+       -------------------------------------------------------- */
+
     header[data-testid="stHeader"] {
         display: none !important;
     }
 
-    [data-testid="stToolbar"] {
-        display: none !important;
-    }
-
+    [data-testid="stToolbar"],
     [data-testid="stDecoration"] {
         display: none !important;
     }
@@ -268,31 +279,65 @@ st.markdown(
         visibility: hidden;
     }
 
+    footer {
+        visibility: hidden;
+    }
+
+    /* --------------------------------------------------------
+       MAIN CONTAINER
+       -------------------------------------------------------- */
+
     .block-container {
         max-width: 820px;
         padding-top: 1.5rem !important;
-        padding-bottom: 2rem;
+        padding-bottom: 2rem !important;
     }
 
-    /* Sidebar */
+    /* --------------------------------------------------------
+       DEFAULT TEXT VISIBILITY
+       -------------------------------------------------------- */
+
+    .stApp p,
+    .stApp li,
+    .stApp label,
+    .stApp h1,
+    .stApp h2,
+    .stApp h3,
+    .stApp h4,
+    .stApp h5,
+    .stApp h6 {
+        color: #35285D;
+    }
+
+    /* --------------------------------------------------------
+       SIDEBAR
+       -------------------------------------------------------- */
+
     section[data-testid="stSidebar"] {
-        background: #f3efff !important;
-        border-right: 1px solid #e0d8f5;
+        background: #F3EFFF !important;
+        border-right: 1px solid #E0D8F5;
     }
 
-    section[data-testid="stSidebar"] * {
-        color: #4d3a91;
+    section[data-testid="stSidebar"]
+    [data-testid="stSidebarContent"] {
+        background: #F3EFFF !important;
+    }
+
+    section[data-testid="stSidebar"] p,
+    section[data-testid="stSidebar"] span,
+    section[data-testid="stSidebar"] label {
+        color: #49329C !important;
     }
 
     .brand-title {
         font-size: 24px;
         font-weight: 800;
-        color: #49329c;
+        color: #49329C !important;
         margin-top: 8px;
     }
 
     .brand-subtitle {
-        color: #9587b8;
+        color: #8273A7 !important;
         font-size: 12px;
         margin-top: 4px;
     }
@@ -301,40 +346,76 @@ st.markdown(
         font-size: 11px;
         letter-spacing: 1.4px;
         font-weight: 800;
-        color: #8874b0;
+        color: #8874B0 !important;
         margin-top: 22px;
         margin-bottom: 12px;
     }
 
-    section[data-testid="stSidebar"] button {
-        background: #ffffff;
-        color: #5b42b1;
-        border: 1px solid #e1d8ff;
-        border-radius: 12px;
+    /* Sidebar buttons */
+
+    section[data-testid="stSidebar"]
+    .stButton > button {
+        background: #FFFFFF !important;
+        color: #49329C !important;
+        border: 1px solid #DED5FF !important;
+        border-radius: 12px !important;
+        min-height: 42px;
     }
 
-    section[data-testid="stSidebar"] button:hover {
-        background: #ece5ff;
-        color: #49329c;
+    section[data-testid="stSidebar"]
+    .stButton > button *,
+    section[data-testid="stSidebar"]
+    .stButton > button p {
+        color: #49329C !important;
+        opacity: 1 !important;
     }
 
-    /* Chat title */
+    section[data-testid="stSidebar"]
+    .stButton > button:hover {
+        background: #ECE5FF !important;
+        border-color: #B7A5F2 !important;
+    }
+
+    /* Sidebar dataset information */
+
+    section[data-testid="stSidebar"]
+    [data-testid="stAlert"] {
+        background: #EDE7FF !important;
+        border: 1px solid #DCD2FF !important;
+        border-radius: 12px !important;
+    }
+
+    section[data-testid="stSidebar"]
+    [data-testid="stAlert"] p,
+    section[data-testid="stSidebar"]
+    [data-testid="stAlert"] span {
+        color: #49329C !important;
+        opacity: 1 !important;
+    }
+
+    /* --------------------------------------------------------
+       MAIN CHAT TITLE
+       -------------------------------------------------------- */
+
     .chat-title {
         font-size: 28px;
         font-weight: 800;
-        color: #49329c;
+        color: #49329C !important;
         margin-bottom: 3px;
     }
 
     .chat-subtitle {
-        color: #9789b6;
+        color: #8273A7 !important;
         font-size: 12px;
         margin-bottom: 22px;
     }
 
-    /* Welcome */
+    /* --------------------------------------------------------
+       WELCOME SCREEN
+       -------------------------------------------------------- */
+
     .welcome-title {
-        color: #49329c;
+        color: #49329C !important;
         font-size: 30px;
         font-weight: 800;
         text-align: center;
@@ -342,29 +423,99 @@ st.markdown(
     }
 
     .welcome-description {
-        color: #9588b2;
+        color: #8273A7 !important;
         text-align: center;
         font-size: 14px;
         margin-top: 10px;
         margin-bottom: 30px;
     }
 
-    /* Loading indicator */
+    /* --------------------------------------------------------
+       SUGGESTED QUESTION BUTTONS
+       -------------------------------------------------------- */
+
+    [data-testid="stMain"]
+    .stButton > button {
+        background: #FFFFFF !important;
+        color: #6547C3 !important;
+        border: 1px solid #DED5FF !important;
+        border-radius: 12px !important;
+        font-weight: 500 !important;
+        min-height: 44px;
+    }
+
+    [data-testid="stMain"]
+    .stButton > button *,
+    [data-testid="stMain"]
+    .stButton > button p,
+    [data-testid="stMain"]
+    .stButton > button span {
+        color: #6547C3 !important;
+        opacity: 1 !important;
+    }
+
+    [data-testid="stMain"]
+    .stButton > button:hover {
+        background: #EEE8FF !important;
+        border-color: #A998ED !important;
+    }
+
+    /* --------------------------------------------------------
+       CHAT MESSAGE VISIBILITY
+       -------------------------------------------------------- */
+
+    [data-testid="stChatMessage"] {
+        background: transparent !important;
+        border: none !important;
+        padding: 12px 4px;
+    }
+
+    [data-testid="stChatMessage"] p,
+    [data-testid="stChatMessage"] span,
+    [data-testid="stChatMessage"] strong,
+    [data-testid="stChatMessage"] em,
+    [data-testid="stChatMessage"] li,
+    [data-testid="stChatMessage"] h1,
+    [data-testid="stChatMessage"] h2,
+    [data-testid="stChatMessage"] h3 {
+        color: #35285D !important;
+        opacity: 1 !important;
+    }
+
+    [data-testid="stChatMessageAvatarUser"] {
+        background: #E99AA6 !important;
+        color: #35285D !important;
+    }
+
+    [data-testid="stChatMessageAvatarAssistant"] {
+        background: #F1EAFF !important;
+        color: #49329C !important;
+    }
+
+    /* --------------------------------------------------------
+       LOADING INDICATOR
+       -------------------------------------------------------- */
+
     .loading-message {
         display: flex;
         align-items: center;
         gap: 10px;
         padding: 8px 2px 12px 2px;
-        color: #49329c;
+        color: #49329C !important;
         font-size: 14px;
         font-weight: 500;
+    }
+
+    .loading-message span {
+        color: #49329C !important;
+        opacity: 1 !important;
     }
 
     .loading-spinner {
         width: 17px;
         height: 17px;
-        border: 2px solid #e1d9ff;
-        border-top-color: #7154e8;
+        border: 2px solid #E1D9FF;
+        border-top-color: #7154E8;
         border-radius: 50%;
         animation: lalim-spin 0.8s linear infinite;
         flex-shrink: 0;
@@ -376,69 +527,100 @@ st.markdown(
         }
     }
 
-    /* Question label */
+    /* --------------------------------------------------------
+       QUESTION LABEL
+       -------------------------------------------------------- */
+
     .question-label {
-        color: #49329c;
+        color: #49329C !important;
         font-size: 14px;
         font-weight: 800;
         margin-top: 18px;
         margin-bottom: 10px;
     }
 
-    /* Question form */
+    /* --------------------------------------------------------
+       QUESTION FORM
+       -------------------------------------------------------- */
+
     [data-testid="stForm"] {
-        background: #f0ebff;
-        border: 1px solid #e0d6ff;
-        border-radius: 18px;
-        padding: 14px;
+        background: #F0EBFF !important;
+        border: 1px solid #E0D6FF !important;
+        border-radius: 18px !important;
+        padding: 14px !important;
     }
 
-    [data-testid="stForm"] input {
-        background: #ffffff !important;
-        color: #35285d !important;
+    [data-testid="stTextInput"] input {
+        background: #FFFFFF !important;
+        color: #35285D !important;
+        -webkit-text-fill-color: #35285D !important;
+        caret-color: #49329C !important;
         border-radius: 10px !important;
     }
 
-    [data-testid="stForm"] button {
-        background: #7154e8 !important;
-        color: white !important;
+    [data-testid="stTextInput"] input::placeholder {
+        color: #9486B2 !important;
+        opacity: 1 !important;
+        -webkit-text-fill-color: #9486B2 !important;
+    }
+
+    [data-testid="stTextInput"] input:focus {
+        border-color: #7154E8 !important;
+        box-shadow: 0 0 0 1px #7154E8 !important;
+    }
+
+    /* Submit button */
+
+    [data-testid="stForm"]
+    button[kind="primary"] {
+        background: #7154E8 !important;
+        color: #FFFFFF !important;
         border: none !important;
         border-radius: 10px !important;
         min-height: 42px;
     }
 
-    [data-testid="stForm"] button:hover {
-        background: #6042d8 !important;
+    [data-testid="stForm"]
+    button[kind="primary"] *,
+    [data-testid="stForm"]
+    button[kind="primary"] p,
+    [data-testid="stForm"]
+    button[kind="primary"] span {
+        color: #FFFFFF !important;
+        opacity: 1 !important;
     }
 
-    /* Chat messages */
-    [data-testid="stChatMessage"] {
-        background: transparent;
-        border: none;
-        padding: 12px 4px;
+    [data-testid="stForm"]
+    button[kind="primary"]:hover {
+        background: #6042D8 !important;
     }
 
-    /* Expanders */
+    /* --------------------------------------------------------
+       RETRIEVAL SOURCE EXPANDER
+       -------------------------------------------------------- */
+
     [data-testid="stExpander"] {
-        background: #f8f5ff;
-        border: 1px solid #dfd6ff;
-        border-radius: 12px;
+        background: #F8F5FF !important;
+        border: 1px solid #DED5FF !important;
+        border-radius: 12px !important;
     }
 
-    [data-testid="stExpander"] summary {
-        color: #49329c !important;
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] summary *,
+    [data-testid="stExpander"] p,
+    [data-testid="stExpander"] span {
+        color: #49329C !important;
     }
 
-    /* Footer */
+    /* --------------------------------------------------------
+       FOOTER
+       -------------------------------------------------------- */
+
     .app-footer {
         text-align: center;
-        color: #aaa0c4;
+        color: #8D80AC !important;
         font-size: 11px;
         margin-top: 35px;
-    }
-
-    footer {
-        visibility: hidden;
     }
 
     </style>
@@ -469,9 +651,6 @@ def get_groq_api_key():
 # ============================================================
 
 def show_loading(placeholder, message):
-    """
-    Display a custom loading message.
-    """
     placeholder.markdown(
         f"""
         <div class="loading-message">
@@ -488,20 +667,12 @@ def show_loading(placeholder, message):
 # ============================================================
 
 def generate_chatbot_response(question, loading_placeholder):
-    """
-    Run the existing rag_query() in a background thread.
-
-    This allows Streamlit to update the loading
-    message while the backend processes the question.
-
-    Note: The stage change is time-based because
-    rag_query() does not expose separate progress events.
-    """
 
     api_key = get_groq_api_key()
 
     if not api_key:
         logger.error("GROQ_API_KEY is missing.")
+
         return {
             "answer": ERROR_MESSAGE,
             "retrieved": [],
@@ -537,7 +708,6 @@ def generate_chatbot_response(question, loading_placeholder):
     while worker.is_alive():
         elapsed = time.monotonic() - start_time
 
-        # Estimated transition to answer generation.
         if elapsed >= 3 and current_stage == "retrieval":
             current_stage = "generation"
 
@@ -555,6 +725,7 @@ def generate_chatbot_response(question, loading_placeholder):
             "LalimSalita request failed: %s",
             error_holder["error"],
         )
+
         return {
             "answer": ERROR_MESSAGE,
             "retrieved": [],
@@ -573,6 +744,7 @@ def generate_chatbot_response(question, loading_placeholder):
 # ============================================================
 
 def display_message(message):
+
     role = message["role"]
 
     avatar = (
@@ -592,11 +764,14 @@ def display_message(message):
             and retrieved
             and message["content"].strip() != FALLBACK
         ):
+
             with st.expander(
                 "Retrieved source chunks",
                 expanded=False,
             ):
+
                 for doc in retrieved:
+
                     st.markdown(
                         f"**Rank {doc.get('rank', '?')} "
                         f"— PDF Page {doc.get('page', '?')}**"
@@ -655,6 +830,7 @@ with st.sidebar:
     )
 
     for conversation in list_conversations():
+
         if st.button(
             conversation["title"],
             key=f"chat_{conversation['id']}",
@@ -670,6 +846,7 @@ with st.sidebar:
     )
 
     with st.expander("Retrieval settings"):
+
         st.markdown(
             """
             **Chunk size:** 500 characters
@@ -745,7 +922,9 @@ if not messages:
     cols = st.columns(3)
 
     for col, example in zip(cols, examples):
+
         with col:
+
             if st.button(
                 example,
                 use_container_width=True,
@@ -763,8 +942,7 @@ for message in messages:
 
 
 # ============================================================
-# LOADING AREA
-# Must appear ABOVE the question label.
+# LOADING AREA ABOVE INPUT
 # ============================================================
 
 loading_placeholder = st.empty()
@@ -796,6 +974,7 @@ with st.form(
     )
 
     with input_col:
+
         question_input = st.text_input(
             "Iyong tanong",
             placeholder="I-type ang iyong tanong dito...",
@@ -803,6 +982,7 @@ with st.form(
         )
 
     with button_col:
+
         submitted = st.form_submit_button(
             "Ipadala",
             type="primary",
