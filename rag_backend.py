@@ -1,21 +1,21 @@
 
 import os
-import json
-import logging
-import re
-import gc
-import threading
-from pathlib import Path
 
-# Limit numerical library threads before importing NumPy.
+# Set thread limits before importing numerical libraries.
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+import json
+import logging
+import re
+import threading
+from pathlib import Path
+
 import numpy as np
-import requests
 import onnxruntime as ort
+import requests
 
 from tokenizers import Tokenizer
 from dotenv import load_dotenv
@@ -38,10 +38,12 @@ EMBEDDINGS_PATH = DATA_DIR / "embeddings.npy"
 MODEL_PATH = MODEL_DIR / "model_int8.onnx"
 TOKENIZER_PATH = MODEL_DIR / "tokenizer.json"
 
+# Set this to the Hugging Face repository containing
+# your NEW quantized model, not the original E5 model.
 MODEL_REPO = os.getenv(
     "HF_MODEL_REPO",
-    "hirayammiv/lalimsalita-e5-onnx",
-)
+    "",
+).strip()
 
 TOP_K = 3
 MAX_QUERY_TOKENS = 128
@@ -61,8 +63,6 @@ GROQ_MODEL = os.getenv(
 logger = logging.getLogger("lalimsalita.backend")
 logging.basicConfig(level=logging.INFO)
 
-# Prevent simultaneous requests from loading
-# multiple copies of the ONNX model.
 _MODEL_LOCK = threading.Lock()
 _MODEL_SESSION = None
 _TOKENIZER = None
@@ -73,15 +73,14 @@ _TOKENIZER = None
 # ============================================================
 
 def load_retrieval_data():
-
     if not CHUNKS_PATH.exists():
         raise FileNotFoundError(
-            f"Missing retrieval file: {CHUNKS_PATH}"
+            f"Missing chunks file: {CHUNKS_PATH}"
         )
 
     if not EMBEDDINGS_PATH.exists():
         raise FileNotFoundError(
-            f"Missing retrieval file: {EMBEDDINGS_PATH}"
+            f"Missing embeddings file: {EMBEDDINGS_PATH}"
         )
 
     with open(
@@ -114,17 +113,14 @@ def load_retrieval_data():
 
     if embeddings.ndim != 2:
         raise ValueError(
-            "embeddings.npy must be a 2D array."
+            "Embeddings must be a 2D array."
         )
 
     if len(chunks) != len(embeddings):
         raise ValueError(
-            "Chunk and embedding counts do not match. "
-            f"Chunks: {len(chunks)}, "
-            f"Embeddings: {len(embeddings)}"
+            "Chunk and embedding counts do not match."
         )
 
-    # Normalize existing embeddings for cosine similarity.
     norms = np.linalg.norm(
         embeddings,
         axis=1,
@@ -148,11 +144,10 @@ CHUNKS, EMBEDDINGS = load_retrieval_data()
 
 
 # ============================================================
-# DOWNLOAD MODEL FILES IF MISSING
+# DOWNLOAD MODEL FILES
 # ============================================================
 
 def ensure_model_files():
-
     MODEL_DIR.mkdir(
         parents=True,
         exist_ok=True,
@@ -175,7 +170,13 @@ def ensure_model_files():
         )
         return
 
-    # Import only when downloading is required.
+    if not MODEL_REPO:
+        raise RuntimeError(
+            "HF_MODEL_REPO is missing. "
+            "Set it to the repository containing "
+            "your quantized ONNX model."
+        )
+
     from huggingface_hub import hf_hub_download
 
     token = os.getenv(
@@ -184,7 +185,6 @@ def ensure_model_files():
     ).strip() or None
 
     for filename in missing_files:
-
         logger.info(
             "Downloading %s from Hugging Face...",
             filename,
@@ -198,16 +198,15 @@ def ensure_model_files():
         )
 
     logger.info(
-        "Required ONNX model files are available."
+        "Required ONNX files are available."
     )
 
 
 # ============================================================
-# MEMORY-OPTIMIZED ONNX SESSION
+# LOAD MEMORY-OPTIMIZED ONNX MODEL
 # ============================================================
 
 def get_model():
-
     global _MODEL_SESSION
     global _TOKENIZER
 
@@ -218,7 +217,6 @@ def get_model():
         return _MODEL_SESSION, _TOKENIZER
 
     with _MODEL_LOCK:
-
         if (
             _MODEL_SESSION is not None
             and _TOKENIZER is not None
@@ -235,15 +233,12 @@ def get_model():
             str(TOKENIZER_PATH)
         )
 
-        # E5 requires the query prefix.
-        # Tokenizer truncation prevents unnecessarily
-        # long inputs from increasing memory use.
         tokenizer.enable_truncation(
             max_length=MAX_QUERY_TOKENS
         )
 
         logger.info(
-            "Initializing memory-optimized ONNX Runtime..."
+            "Initializing ONNX Runtime..."
         )
 
         options = ort.SessionOptions()
@@ -259,10 +254,8 @@ def get_model():
             ort.GraphOptimizationLevel.ORT_DISABLE_ALL
         )
 
-        # Reduce additional CPU memory allocations.
         options.enable_cpu_mem_arena = False
         options.enable_mem_pattern = False
-        options.enable_mem_reuse = False
 
         session = ort.InferenceSession(
             str(MODEL_PATH),
@@ -270,24 +263,21 @@ def get_model():
             providers=["CPUExecutionProvider"],
         )
 
+        _MODEL_SESSION = session
+        _TOKENIZER = tokenizer
+
         logger.info(
             "ONNX model initialized successfully."
         )
-
-        _TOKENIZER = tokenizer
-        _MODEL_SESSION = session
 
         return _MODEL_SESSION, _TOKENIZER
 
 
 # ============================================================
-# GENERATE QUERY EMBEDDING
+# QUERY EMBEDDING
 # ============================================================
 
 def get_query_embedding(question):
-
-    session, tokenizer = get_model()
-
     question = str(question).strip()
 
     if not question:
@@ -295,6 +285,9 @@ def get_query_embedding(question):
             "Question cannot be empty."
         )
 
+    session, tokenizer = get_model()
+
+    # E5 query prefix.
     prefixed_question = "query: " + question
 
     encoded = tokenizer.encode(
@@ -312,11 +305,6 @@ def get_query_embedding(question):
         dtype=np.int64,
     )
 
-    token_type_ids = np.zeros_like(
-        input_ids,
-        dtype=np.int64,
-    )
-
     available_inputs = {
         item.name
         for item in session.get_inputs()
@@ -328,27 +316,23 @@ def get_query_embedding(question):
     }
 
     if "token_type_ids" in available_inputs:
-        inputs["token_type_ids"] = token_type_ids
+        inputs["token_type_ids"] = np.zeros_like(
+            input_ids,
+            dtype=np.int64,
+        )
 
-    # Execute inference once.
     outputs = session.run(
         None,
         inputs,
     )
 
-    # E5 ONNX exports commonly return token embeddings:
-    # [batch, sequence_length, hidden_dimension].
     token_embeddings = np.asarray(
         outputs[0],
         dtype=np.float32,
     )
 
     if token_embeddings.ndim == 3:
-
-        # Attention-mask-aware mean pooling.
-        mask = attention_mask[
-            :, :token_embeddings.shape[1]
-        ].astype(np.float32)
+        mask = attention_mask.astype(np.float32)
 
         expanded_mask = np.expand_dims(
             mask,
@@ -365,48 +349,41 @@ def get_query_embedding(question):
             1e-12,
         )
 
-        vector = summed / counts
-        vector = vector[0]
+        vector = (summed / counts)[0]
 
     elif token_embeddings.ndim == 2:
-
         if token_embeddings.shape[0] != 1:
             raise ValueError(
-                "Unexpected ONNX embedding output shape."
+                "Unexpected ONNX output batch size."
             )
 
         vector = token_embeddings[0]
 
     else:
         raise ValueError(
-            "Unsupported ONNX output shape: "
+            f"Unsupported ONNX output: "
             f"{token_embeddings.shape}"
         )
 
     if vector.shape[0] != EMBEDDINGS.shape[1]:
         raise ValueError(
             "Embedding dimension mismatch. "
-            f"Query: {vector.shape[0]}, "
-            f"Stored: {EMBEDDINGS.shape[1]}"
+            f"Query dimension: {vector.shape[0]}; "
+            f"Stored dimension: {EMBEDDINGS.shape[1]}. "
+            "Regenerate embeddings.npy with "
+            "the matching ONNX model."
         )
 
     norm = np.linalg.norm(vector)
 
-    if norm <= 0:
+    if not np.isfinite(norm) or norm <= 0:
         raise ValueError(
-            "Query embedding has zero magnitude."
+            "Invalid query embedding."
         )
 
-    vector = vector / norm
-
-    # Release temporary arrays.
-    del outputs
-    del token_embeddings
-
-    return vector.astype(
-        np.float32,
-        copy=False,
-    )
+    return (
+        vector / norm
+    ).astype(np.float32)
 
 
 # ============================================================
@@ -414,7 +391,6 @@ def get_query_embedding(question):
 # ============================================================
 
 def get_chunk_text(chunk):
-
     if isinstance(chunk, str):
         return chunk
 
@@ -436,7 +412,6 @@ def get_chunk_text(chunk):
 
 
 def get_chunk_page(chunk):
-
     if not isinstance(chunk, dict):
         return "Unknown"
 
@@ -450,7 +425,6 @@ def get_chunk_page(chunk):
         "page_number",
         "source_page",
     ):
-
         if chunk.get(key) is not None:
             return chunk[key]
 
@@ -465,7 +439,6 @@ def get_chunk_page(chunk):
 # ============================================================
 
 def normalize_text(value):
-
     value = str(value).casefold()
 
     value = re.sub(
@@ -475,13 +448,10 @@ def normalize_text(value):
         flags=re.UNICODE,
     )
 
-    return " ".join(
-        value.split()
-    )
+    return " ".join(value.split())
 
 
 def get_vocabulary_words(chunk):
-
     if not isinstance(chunk, dict):
         return []
 
@@ -493,7 +463,6 @@ def get_vocabulary_words(chunk):
         "vocabulary_word",
         "term",
     ):
-
         value = chunk.get(key)
 
         if isinstance(value, str) and value.strip():
@@ -502,14 +471,12 @@ def get_vocabulary_words(chunk):
     metadata = chunk.get("metadata") or {}
 
     if isinstance(metadata, dict):
-
         for key in (
             "word",
             "WORD",
             "vocabulary_word",
             "term",
         ):
-
             value = metadata.get(key)
 
             if isinstance(value, str) and value.strip():
@@ -517,20 +484,19 @@ def get_vocabulary_words(chunk):
 
     text = get_chunk_text(chunk)
 
+    # Handles Markdown-style WORD: labels.
     matches = re.findall(
-        r"(?im)^\s*WORD\s*:\s*([^\n\r]+)",
+        r"(?im)(?:^|\n)\s*\**WORD\**\s*:\s*\**\s*"
+        r"([^\n*]+)",
         text,
     )
 
     words.extend(matches)
 
-    return list(
-        dict.fromkeys(words)
-    )
+    return list(dict.fromkeys(words))
 
 
 def exact_match_score(question, chunk):
-
     normalized_question = normalize_text(
         question
     )
@@ -538,7 +504,6 @@ def exact_match_score(question, chunk):
     words = get_vocabulary_words(chunk)
 
     for word in words:
-
         normalized_word = normalize_text(word)
 
         if not normalized_word:
@@ -550,10 +515,7 @@ def exact_match_score(question, chunk):
             + r"(?!\w)"
         )
 
-        if re.search(
-            pattern,
-            normalized_question,
-        ):
+        if re.search(pattern, normalized_question):
             return 1.0
 
     return 0.0
@@ -564,7 +526,6 @@ def exact_match_score(question, chunk):
 # ============================================================
 
 def retrieve(question, top_k=TOP_K):
-
     question = str(question).strip()
 
     if not question:
@@ -579,7 +540,6 @@ def retrieve(question, top_k=TOP_K):
     results = []
 
     for index, chunk in enumerate(CHUNKS):
-
         text = get_chunk_text(chunk)
 
         if not text.strip():
@@ -594,8 +554,7 @@ def retrieve(question, top_k=TOP_K):
             chunk,
         )
 
-        # Prioritize vocabulary matches while
-        # retaining semantic similarity ranking.
+        # Preserve the existing hybrid scoring rule.
         score = similarity + (0.25 * exact)
 
         results.append({
@@ -623,7 +582,6 @@ def retrieve(question, top_k=TOP_K):
         selected,
         start=1,
     ):
-
         result["rank"] = rank
         result.pop("_score", None)
 
@@ -640,12 +598,11 @@ def retrieve(question, top_k=TOP_K):
 # ============================================================
 
 def is_out_of_scope(question):
-
     raw = str(question).casefold()
     normalized = normalize_text(question)
 
     math_patterns = [
-        r"\b\d+\s*[\+\-\*/×÷]\s*\d+\b",
+        r"\b\d+\s*[+\-*/×÷]\s*\d+\b",
         r"\b\d+\s*(plus|minus|times)\s*\d+\b",
     ]
 
@@ -653,7 +610,6 @@ def is_out_of_scope(question):
         if re.search(pattern, raw):
             return True
 
-    # Reject clearly unrelated factual questions.
     out_of_scope_patterns = [
         r"kasalukuyang pangulo",
         r"president of the philippines",
@@ -676,23 +632,19 @@ def generate_answer(
     retrieved,
     api_key,
 ):
-
     if not retrieved:
         return FALLBACK
 
     context_parts = []
 
     for item in retrieved:
-
         context_parts.append(
             f"[Source {item['rank']} | "
             f"Page {item['page']}]\n"
             f"{item['text']}"
         )
 
-    context = "\n\n".join(
-        context_parts
-    )
+    context = "\n\n".join(context_parts)
 
     system_prompt = """
 Ikaw si LalimSalita, isang Filipino vocabulary
@@ -774,7 +726,6 @@ Sagutin ang tanong gamit lamang ang context.
 # ============================================================
 
 def rag_query(question, api_key=None):
-
     question = str(question).strip()
 
     if not question:
@@ -797,7 +748,8 @@ def rag_query(question, api_key=None):
 
     if not api_key:
         raise RuntimeError(
-            "GROQ_API_KEY is missing."
+            "GROQ_API_KEY is missing. "
+            "Configure it in .env or Render Environment."
         )
 
     retrieved = retrieve(
