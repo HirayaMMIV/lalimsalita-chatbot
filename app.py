@@ -74,8 +74,6 @@ def initialize_database():
             )
         """)
 
-        # Support existing databases that do not yet
-        # contain the retrieved_json column.
         columns = {
             row["name"]
             for row in connection.execute(
@@ -234,7 +232,7 @@ if "pending_question" not in st.session_state:
 
 
 # ============================================================
-# COMPLETE LIGHT THEME CSS
+# COMPLETE CSS
 # ============================================================
 
 st.markdown(
@@ -242,8 +240,12 @@ st.markdown(
     <style>
 
     /* ========================================================
-       GLOBAL BACKGROUND
+       GLOBAL COLORS
        ======================================================== */
+
+    :root {
+        color-scheme: light;
+    }
 
     html,
     body,
@@ -264,8 +266,6 @@ st.markdown(
             ) !important;
     }
 
-    /* Hide default Streamlit header */
-
     header[data-testid="stHeader"] {
         background: transparent !important;
     }
@@ -283,17 +283,11 @@ st.markdown(
         visibility: hidden;
     }
 
-    /* ========================================================
-       MAIN CONTENT
-       ======================================================== */
-
     .block-container {
         max-width: 820px;
         padding-top: 1.5rem !important;
         padding-bottom: 2rem !important;
     }
-
-    /* Global readable text */
 
     .stApp p,
     .stApp li,
@@ -311,14 +305,14 @@ st.markdown(
        SIDEBAR
        ======================================================== */
 
-    section[data-testid="stSidebar"] {
-        background: #F3EFFF !important;
-        border-right: 1px solid #E0D8F5;
-    }
-
+    section[data-testid="stSidebar"],
     section[data-testid="stSidebar"]
     [data-testid="stSidebarContent"] {
         background: #F3EFFF !important;
+    }
+
+    section[data-testid="stSidebar"] {
+        border-right: 1px solid #E0D8F5;
     }
 
     section[data-testid="stSidebar"] p,
@@ -349,8 +343,6 @@ st.markdown(
         margin-bottom: 12px;
     }
 
-    /* Sidebar buttons */
-
     section[data-testid="stSidebar"]
     .stButton > button {
         background: #FFFFFF !important;
@@ -376,30 +368,12 @@ st.markdown(
     }
 
     /* ========================================================
-       DATASET INFORMATION - FIX INVISIBLE TEXT
+       DATASET CARD
        ======================================================== */
 
-    section[data-testid="stSidebar"]
-    [data-testid="stAlert"] {
+    .dataset-card {
         background: #E9E2FF !important;
         border: 1px solid #D7C9FF !important;
-        border-radius: 12px !important;
-    }
-
-    section[data-testid="stSidebar"]
-    [data-testid="stAlert"] *,
-    section[data-testid="stSidebar"]
-    [data-testid="stAlert"] p,
-    section[data-testid="stSidebar"]
-    [data-testid="stAlert"] span {
-        color: #49329C !important;
-        -webkit-text-fill-color: #49329C !important;
-        opacity: 1 !important;
-    }
-
-    .dataset-card {
-        background: #E9E2FF;
-        border: 1px solid #D7C9FF;
         border-radius: 12px;
         padding: 15px;
         color: #49329C !important;
@@ -445,7 +419,7 @@ st.markdown(
     }
 
     /* ========================================================
-       SUGGESTED QUESTION BUTTONS
+       SUGGESTED QUESTIONS
        ======================================================== */
 
     [data-testid="stMain"]
@@ -498,14 +472,17 @@ st.markdown(
     }
 
     /* ========================================================
-       USER AVATAR - FIX BLACK BACKGROUND
+       USER AVATAR - PINK BACKGROUND, DARK USER ICON
        ======================================================== */
 
     [data-testid="stChatMessageAvatarUser"],
     [data-testid="stChatMessageAvatarUser"] > div,
     [data-testid="stChatMessageAvatarUser"]
-    [data-testid="stAvatar"] {
+    [data-testid="stAvatar"],
+    [data-testid="stChatMessageAvatarUser"]
+    [data-testid="stAvatar"] > div {
         background: #E99AA6 !important;
+        background-color: #E99AA6 !important;
         color: #35285D !important;
         border-radius: 10px !important;
     }
@@ -514,6 +491,14 @@ st.markdown(
     [data-testid="stChatMessageAvatarUser"] svg {
         color: #35285D !important;
         stroke: #35285D !important;
+    }
+
+    /* Streamlit's generic avatar element */
+
+    [data-testid="stChatMessage"]
+    [data-testid="stChatMessageAvatarUser"] {
+        background-color: #E99AA6 !important;
+        border-radius: 10px !important;
     }
 
     /* Assistant avatar */
@@ -583,7 +568,7 @@ st.markdown(
     }
 
     /* ========================================================
-       INPUT FIELD - FIX RED OUTLINE
+       INPUT FIELD
        ======================================================== */
 
     [data-testid="stForm"]
@@ -612,8 +597,6 @@ st.markdown(
         box-shadow: 0 0 0 1px #7154E8 !important;
     }
 
-    /* BaseWeb input wrapper */
-
     [data-testid="stForm"]
     [data-testid="stTextInput"]
     [data-baseweb="input"] {
@@ -629,42 +612,42 @@ st.markdown(
     }
 
     /* ========================================================
-       IPADALA BUTTON - ALWAYS PURPLE
+       IPADALA BUTTON - PURPLE BACKGROUND, WHITE TEXT
        ======================================================== */
 
     [data-testid="stForm"]
-    button[type="submit"],
+    [data-testid="stFormSubmitButton"] button,
     [data-testid="stForm"]
     button[kind="primary"],
     [data-testid="stForm"]
-    [data-testid="stFormSubmitButton"] button {
+    button[type="submit"] {
         background: #7154E8 !important;
         background-color: #7154E8 !important;
         background-image: none !important;
         border: 1px solid #7154E8 !important;
-        color: #FFFFFF !important;
         border-radius: 10px !important;
+        color: #FFFFFF !important;
+        -webkit-text-fill-color: #FFFFFF !important;
         box-shadow: none !important;
         min-height: 42px;
     }
 
-    /* Hover */
-
     [data-testid="stForm"]
-    button[type="submit"]:hover,
+    [data-testid="stFormSubmitButton"] button:hover,
     [data-testid="stForm"]
-    button[kind="primary"]:hover {
+    button[kind="primary"]:hover,
+    [data-testid="stForm"]
+    button[type="submit"]:hover {
         background: #6042D8 !important;
         background-color: #6042D8 !important;
         border-color: #6042D8 !important;
+        color: #FFFFFF !important;
     }
 
-    /* Focus and active */
-
     [data-testid="stForm"]
-    button[type="submit"]:focus,
+    [data-testid="stFormSubmitButton"] button:focus,
     [data-testid="stForm"]
-    button[type="submit"]:active,
+    [data-testid="stFormSubmitButton"] button:active,
     [data-testid="stForm"]
     button[kind="primary"]:focus,
     [data-testid="stForm"]
@@ -676,19 +659,41 @@ st.markdown(
         box-shadow: none !important;
     }
 
-    /* Button text remains white */
+    /* Force WHITE text on every child element */
 
     [data-testid="stForm"]
-    button[type="submit"] *,
+    [data-testid="stFormSubmitButton"] button *,
     [data-testid="stForm"]
-    button[kind="primary"] * {
+    [data-testid="stFormSubmitButton"] button p,
+    [data-testid="stForm"]
+    [data-testid="stFormSubmitButton"] button span,
+    [data-testid="stForm"]
+    button[kind="primary"] *,
+    [data-testid="stForm"]
+    button[type="submit"] * {
+        color: #FFFFFF !important;
+        -webkit-text-fill-color: #FFFFFF !important;
+        opacity: 1 !important;
+    }
+
+    /* Override generic main-area button text styling */
+
+    [data-testid="stMain"]
+    [data-testid="stForm"]
+    [data-testid="stFormSubmitButton"] button *,
+    [data-testid="stMain"]
+    [data-testid="stForm"]
+    [data-testid="stFormSubmitButton"] button p,
+    [data-testid="stMain"]
+    [data-testid="stForm"]
+    [data-testid="stFormSubmitButton"] button span {
         color: #FFFFFF !important;
         -webkit-text-fill-color: #FFFFFF !important;
         opacity: 1 !important;
     }
 
     /* ========================================================
-       RETRIEVED SOURCE EXPANDER
+       RETRIEVED SOURCES
        ======================================================== */
 
     [data-testid="stExpander"] {
@@ -815,7 +820,7 @@ def generate_chatbot_response(
     loading_placeholder.empty()
 
     if "error" in error_holder:
-        logger.exception(
+        logger.error(
             "LalimSalita request failed: %s",
             error_holder["error"],
         )
@@ -840,19 +845,22 @@ def generate_chatbot_response(
 def display_message(message):
     role = message["role"]
 
-    # Use a Unicode symbol for the user avatar
-    # to avoid the dark silhouette emoji.
+    # IMPORTANT:
+    # Use Streamlit's built-in user avatar rather than an emoji.
+    # This allows the CSS to apply the pink background.
     if role == "assistant":
         avatar = (
             str(LOGO_PATH)
             if LOGO_PATH.exists()
             else "📖"
         )
+        chat_role = "assistant"
     else:
-        avatar = "🙂"
+        avatar = None
+        chat_role = "user"
 
     with st.chat_message(
-        role,
+        chat_role,
         avatar=avatar,
     ):
         st.markdown(message["content"])
@@ -973,8 +981,6 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    # Custom dataset card ensures readable text
-    # regardless of Streamlit's alert theme.
     st.markdown(
         """
         <div class="dataset-card">
@@ -1057,7 +1063,7 @@ for message in messages:
 
 
 # ============================================================
-# LOADING AREA ABOVE QUESTION INPUT
+# LOADING AREA ABOVE INPUT
 # ============================================================
 
 loading_placeholder = st.empty()
