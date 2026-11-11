@@ -2,20 +2,16 @@
 import os
 import json
 import uuid
-import time
 import sqlite3
 import logging
-import threading
 from pathlib import Path
 from datetime import datetime
 
 import streamlit as st
-
 from rag_backend import rag_query, FALLBACK
 
-
 # ============================================================
-# PAGE CONFIGURATION
+# CONFIGURATION
 # ============================================================
 
 st.set_page_config(
@@ -27,16 +23,14 @@ st.set_page_config(
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "lalimsalita_chats.db"
-LOGO_PATH = BASE_DIR / "lalimsalita_logo.png"
 
-ERROR_MESSAGE = (
-    "May problema sa pagkuha ng sagot. "
-    "Pakisubukang muli."
-)
-
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("lalimsalita.app")
 
+WELCOME_QUESTIONS = [
+    "Ano ang kahulugan ng hilahil?",
+    "Ano ang ibig sabihin ng dalamhati?",
+    "Ano ang kahulugan ng nagpipighati?",
+]
 
 # ============================================================
 # DATABASE
@@ -45,7 +39,8 @@ logger = logging.getLogger("lalimsalita.app")
 def get_connection():
     connection = sqlite3.connect(
         str(DB_PATH),
-        timeout=15,
+        timeout=20,
+        check_same_thread=False,
     )
     connection.row_factory = sqlite3.Row
     return connection
@@ -53,13 +48,11 @@ def get_connection():
 
 def initialize_database():
     with get_connection() as connection:
-
         connection.execute("""
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                created_at TEXT NOT NULL
             )
         """)
 
@@ -70,10 +63,13 @@ def initialize_database():
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 retrieved_json TEXT DEFAULT '[]',
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (conversation_id)
+                    REFERENCES conversations(id)
             )
         """)
 
+        # Support older databases without retrieved_json.
         columns = {
             row["name"]
             for row in connection.execute(
@@ -82,46 +78,50 @@ def initialize_database():
         }
 
         if "retrieved_json" not in columns:
-            connection.execute("""
-                ALTER TABLE messages
-                ADD COLUMN retrieved_json TEXT DEFAULT '[]'
-            """)
+            connection.execute(
+                "ALTER TABLE messages "
+                "ADD COLUMN retrieved_json TEXT DEFAULT '[]'"
+            )
+
+        connection.commit()
 
 
 def create_conversation():
     conversation_id = str(uuid.uuid4())
-    now = datetime.now().isoformat()
 
     with get_connection() as connection:
         connection.execute(
             """
             INSERT INTO conversations
-            (id, title, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
+                (id, title, created_at)
+            VALUES (?, ?, ?)
             """,
             (
                 conversation_id,
                 "Bagong usapan",
-                now,
-                now,
+                datetime.now().isoformat(),
             ),
         )
+        connection.commit()
 
     return conversation_id
 
 
 def list_conversations():
     with get_connection() as connection:
-        rows = connection.execute("""
-            SELECT id, title
+        return connection.execute(
+            """
+            SELECT id, title, created_at
             FROM conversations
-            ORDER BY updated_at DESC
-        """).fetchall()
-
-    return [dict(row) for row in rows]
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
 
 
 def load_messages(conversation_id):
+    if not conversation_id:
+        return []
+
     with get_connection() as connection:
         rows = connection.execute(
             """
@@ -140,7 +140,7 @@ def load_messages(conversation_id):
             retrieved = json.loads(
                 row["retrieved_json"] or "[]"
             )
-        except (ValueError, TypeError):
+        except (json.JSONDecodeError, TypeError):
             retrieved = []
 
         messages.append({
@@ -158,64 +158,71 @@ def save_message(
     content,
     retrieved=None,
 ):
-    now = datetime.now().isoformat()
+    retrieved_json = json.dumps(
+        retrieved or [],
+        ensure_ascii=False,
+        default=str,
+    )
 
     with get_connection() as connection:
         connection.execute(
             """
             INSERT INTO messages
-            (
-                conversation_id,
-                role,
-                content,
-                retrieved_json,
-                created_at
-            )
+                (
+                    conversation_id,
+                    role,
+                    content,
+                    retrieved_json,
+                    created_at
+                )
             VALUES (?, ?, ?, ?, ?)
             """,
             (
                 conversation_id,
                 role,
-                str(content),
-                json.dumps(
-                    retrieved or [],
-                    ensure_ascii=False,
-                    default=str,
-                ),
-                now,
+                content,
+                retrieved_json,
+                datetime.now().isoformat(),
             ),
+        )
+        connection.commit()
+
+
+def update_conversation_title(
+    conversation_id,
+    title,
+):
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE conversations
+            SET title = ?
+            WHERE id = ?
+            """,
+            (title[:80], conversation_id),
+        )
+        connection.commit()
+
+
+def delete_conversation(conversation_id):
+    with get_connection() as connection:
+        connection.execute(
+            """
+            DELETE FROM messages
+            WHERE conversation_id = ?
+            """,
+            (conversation_id,),
         )
 
         connection.execute(
             """
-            UPDATE conversations
-            SET updated_at = ?
-            WHERE id = ?
-            """,
-            (now, conversation_id),
-        )
-
-
-def update_conversation_title(conversation_id, question):
-    with get_connection() as connection:
-        row = connection.execute(
-            """
-            SELECT title
-            FROM conversations
+            DELETE FROM conversations
             WHERE id = ?
             """,
             (conversation_id,),
-        ).fetchone()
+        )
 
-        if row and row["title"] == "Bagong usapan":
-            connection.execute(
-                """
-                UPDATE conversations
-                SET title = ?
-                WHERE id = ?
-                """,
-                (question[:55], conversation_id),
-            )
+        connection.commit()
 
 
 # ============================================================
@@ -225,673 +232,378 @@ def update_conversation_title(conversation_id, question):
 initialize_database()
 
 if "conversation_id" not in st.session_state:
-    st.session_state.conversation_id = create_conversation()
+    existing = list_conversations()
+
+    st.session_state.conversation_id = (
+        existing[0]["id"] if existing else None
+    )
 
 if "pending_question" not in st.session_state:
     st.session_state.pending_question = None
 
+if "delete_target" not in st.session_state:
+    st.session_state.delete_target = None
+
+
+def start_new_conversation():
+    st.session_state.conversation_id = (
+        create_conversation()
+    )
+    st.session_state.pending_question = None
+    st.session_state.delete_target = None
+
+
+def open_conversation(conversation_id):
+    st.session_state.conversation_id = conversation_id
+    st.session_state.pending_question = None
+    st.session_state.delete_target = None
+
+
+def request_delete(conversation_id):
+    st.session_state.delete_target = conversation_id
+
+
+def confirm_delete():
+    target = st.session_state.delete_target
+
+    if not target:
+        return
+
+    delete_conversation(target)
+
+    if st.session_state.conversation_id == target:
+        remaining = list_conversations()
+
+        st.session_state.conversation_id = (
+            remaining[0]["id"] if remaining else None
+        )
+
+    st.session_state.delete_target = None
+
 
 # ============================================================
-# COMPLETE CSS
+# CSS / DESIGN
 # ============================================================
 
-st.markdown(
-    """
-    <style>
+st.markdown("""
+<style>
 
-    /* ========================================================
-       GLOBAL COLORS
-       ======================================================== */
+/* Overall theme */
+:root {
+    --purple: #6952e8;
+    --purple-dark: #4d359f;
+    --purple-light: #f0ebff;
+    --text: #302653;
+    --muted: #8175a2;
+    --border: #e2d9ff;
+}
 
-    :root {
-        color-scheme: light;
-    }
+.stApp {
+    background:
+        radial-gradient(
+            ellipse at 90% 0%,
+            #f1edff 0%,
+            transparent 45%
+        ),
+        #fbfaff;
+    color: var(--text);
+}
 
-    html,
-    body,
-    .stApp,
-    [data-testid="stAppViewContainer"],
-    [data-testid="stMain"] {
-        background-color: #FAF8FF !important;
-        color: #35285D !important;
-    }
+/* Remove Streamlit top decoration */
+[data-testid="stDecoration"] {
+    display: none;
+}
 
-    .stApp {
-        background:
-            radial-gradient(
-                ellipse at top right,
-                #F0EAFF 0%,
-                #FAF8FF 45%,
-                #FCFAFF 100%
-            ) !important;
-    }
+header[data-testid="stHeader"] {
+    background: transparent;
+}
 
-    header[data-testid="stHeader"] {
-        background: transparent !important;
-    }
+/* Main content */
+.block-container {
+    max-width: 1000px;
+    padding-top: 1.6rem;
+    padding-bottom: 7rem;
+}
 
-    [data-testid="stToolbar"],
-    [data-testid="stDecoration"] {
-        display: none !important;
-    }
+/* Sidebar */
+[data-testid="stSidebar"] {
+    background: #f3efff;
+    border-right: 1px solid #e3dcfa;
+}
 
-    #MainMenu {
-        visibility: hidden;
-    }
+[data-testid="stSidebar"] * {
+    color: #46348d;
+}
 
-    footer {
-        visibility: hidden;
-    }
+.sidebar-brand {
+    padding: 12px 4px 22px;
+    border-bottom: 1px solid #dcd4ef;
+    margin-bottom: 22px;
+}
 
+.sidebar-brand h2 {
+    color: #4d359f !important;
+    font-size: 25px;
+    font-weight: 800;
+    margin: 0;
+}
+
+.sidebar-brand p {
+    color: #8175a2 !important;
+    font-size: 12px;
+    margin-top: 6px;
+}
+
+.sidebar-heading {
+    color: #8172a6 !important;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 1.4px;
+    margin: 18px 0 12px;
+    text-transform: uppercase;
+}
+
+/* Sidebar buttons */
+[data-testid="stSidebar"] .stButton > button {
+    background: white !important;
+    border: 1px solid #e1d9ff !important;
+    border-radius: 12px !important;
+    color: #4d359f !important;
+    min-height: 42px;
+    transition: 0.2s ease;
+}
+
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: #ebe4ff !important;
+    border-color: #ad9cff !important;
+    color: #4d359f !important;
+}
+
+[data-testid="stSidebar"] .stButton > button p {
+    color: inherit !important;
+}
+
+/* Conversation rows */
+.history-row {
+    margin-bottom: 4px;
+}
+
+[data-testid="stSidebar"] [data-testid="stHorizontalBlock"] {
+    align-items: center;
+}
+
+/* Chat header */
+.chat-brand {
+    padding: 4px 0 22px;
+    border-bottom: 1px solid #ded7ed;
+    margin-bottom: 28px;
+}
+
+.chat-brand h1 {
+    color: #4d359f !important;
+    font-size: 29px;
+    font-weight: 800;
+    margin: 0;
+}
+
+.chat-brand p {
+    color: #8175a2 !important;
+    font-size: 12px;
+    margin: 4px 0 0;
+}
+
+/* Chat messages */
+[data-testid="stChatMessage"] {
+    background: transparent !important;
+    border: none !important;
+    padding: 10px 0 !important;
+}
+
+/* Assistant message alignment */
+[data-testid="stChatMessage"]:has(
+    [data-testid="chatAvatarIcon-assistant"]
+) {
+    max-width: 90%;
+    margin-right: auto;
+}
+
+/* User message alignment */
+[data-testid="stChatMessage"]:has(
+    [data-testid="chatAvatarIcon-user"]
+) {
+    max-width: 82%;
+    margin-left: auto;
+    flex-direction: row-reverse;
+}
+
+/* User bubble */
+[data-testid="stChatMessage"]:has(
+    [data-testid="chatAvatarIcon-user"]
+) [data-testid="stChatMessageContent"] {
+    background: #6952e8 !important;
+    color: #ffffff !important;
+    border-radius: 18px 18px 5px 18px;
+    padding: 12px 17px;
+    width: fit-content;
+    margin-left: auto;
+}
+
+/* White text in user bubble */
+[data-testid="stChatMessage"]:has(
+    [data-testid="chatAvatarIcon-user"]
+) [data-testid="stChatMessageContent"] * {
+    color: #ffffff !important;
+}
+
+/* Assistant bubble */
+[data-testid="stChatMessage"]:has(
+    [data-testid="chatAvatarIcon-assistant"]
+) [data-testid="stChatMessageContent"] {
+    background: #ffffff !important;
+    color: #302653 !important;
+    border: 1px solid #ece6ff;
+    border-radius: 5px 18px 18px 18px;
+    padding: 14px 18px;
+    box-shadow: 0 3px 14px rgba(70, 45, 120, 0.04);
+}
+
+[data-testid="stChatMessage"]:has(
+    [data-testid="chatAvatarIcon-assistant"]
+) [data-testid="stChatMessageContent"] p,
+[data-testid="stChatMessage"]:has(
+    [data-testid="chatAvatarIcon-assistant"]
+) [data-testid="stChatMessageContent"] li {
+    color: #302653 !important;
+}
+
+/* Chat avatars */
+[data-testid="stChatMessageAvatarUser"] {
+    background: #e89aa6 !important;
+    border-radius: 11px !important;
+}
+
+[data-testid="stChatMessageAvatarAssistant"] {
+    background: #f1eaff !important;
+    border-radius: 11px !important;
+}
+
+/* Fixed bottom input */
+[data-testid="stBottom"] {
+    background: linear-gradient(
+        to bottom,
+        transparent,
+        #fbfaff 18%
+    ) !important;
+    padding-top: 12px;
+}
+
+[data-testid="stBottom"] > div {
+    background: transparent !important;
+}
+
+[data-testid="stChatInput"] {
+    background: #f0ebff !important;
+    border: 1px solid #ded4ff !important;
+    border-radius: 18px !important;
+    padding: 7px !important;
+    box-shadow: 0 8px 24px rgba(80, 55, 140, 0.07);
+}
+
+[data-testid="stChatInput"] textarea {
+    background: #ffffff !important;
+    color: #302653 !important;
+    -webkit-text-fill-color: #302653 !important;
+    border-radius: 10px !important;
+}
+
+[data-testid="stChatInput"] textarea::placeholder {
+    color: #8b7cae !important;
+    -webkit-text-fill-color: #8b7cae !important;
+}
+
+/* Keep send button purple */
+[data-testid="stChatInput"] button {
+    background: #6952e8 !important;
+    color: #ffffff !important;
+    border-radius: 10px !important;
+}
+
+[data-testid="stChatInput"] button:hover {
+    background: #5741cb !important;
+}
+
+[data-testid="stChatInput"] button svg {
+    color: #ffffff !important;
+    fill: none;
+}
+
+/* Source expander */
+[data-testid="stExpander"] {
+    border: 1px solid #ded5f6 !important;
+    border-radius: 11px !important;
+    background: #faf8ff !important;
+}
+
+[data-testid="stExpander"] summary,
+[data-testid="stExpander"] summary * {
+    color: #4d359f !important;
+}
+
+/* Welcome */
+.welcome {
+    text-align: center;
+    margin: 65px auto 24px;
+}
+
+.welcome h2 {
+    color: #4d359f !important;
+    font-size: 29px;
+    font-weight: 800;
+}
+
+.welcome p {
+    color: #8175a2 !important;
+    font-size: 14px;
+}
+
+/* Suggested questions */
+.stButton > button[kind="secondary"] {
+    border-radius: 12px;
+}
+
+/* General text */
+.stMarkdown,
+.stMarkdown p,
+.stMarkdown li {
+    line-height: 1.7;
+}
+
+/* Mobile */
+@media (max-width: 768px) {
     .block-container {
-        max-width: 820px;
-        padding-top: 1.5rem !important;
-        padding-bottom: 2rem !important;
+        padding-top: 1rem;
+        padding-bottom: 6rem;
     }
 
-    .stApp p,
-    .stApp li,
-    .stApp label,
-    .stApp h1,
-    .stApp h2,
-    .stApp h3,
-    .stApp h4,
-    .stApp h5,
-    .stApp h6 {
-        color: #35285D;
+    .chat-brand h1 {
+        font-size: 25px;
     }
-
-    /* ========================================================
-       SIDEBAR
-       ======================================================== */
-
-    section[data-testid="stSidebar"],
-    section[data-testid="stSidebar"]
-    [data-testid="stSidebarContent"] {
-        background: #F3EFFF !important;
-    }
-
-    section[data-testid="stSidebar"] {
-        border-right: 1px solid #E0D8F5;
-    }
-
-    section[data-testid="stSidebar"] p,
-    section[data-testid="stSidebar"] span,
-    section[data-testid="stSidebar"] label {
-        color: #49329C !important;
-    }
-
-    .brand-title {
-        font-size: 24px;
-        font-weight: 800;
-        color: #49329C !important;
-        margin-top: 8px;
-    }
-
-    .brand-subtitle {
-        color: #8273A7 !important;
-        font-size: 12px;
-        margin-top: 4px;
-    }
-
-    .sidebar-heading {
-        font-size: 11px;
-        letter-spacing: 1.4px;
-        font-weight: 800;
-        color: #8874B0 !important;
-        margin-top: 22px;
-        margin-bottom: 12px;
-    }
-
-    section[data-testid="stSidebar"]
-    .stButton > button {
-        background: #FFFFFF !important;
-        color: #49329C !important;
-        border: 1px solid #DED5FF !important;
-        border-radius: 12px !important;
-        min-height: 42px;
-    }
-
-    section[data-testid="stSidebar"]
-    .stButton > button *,
-    section[data-testid="stSidebar"]
-    .stButton > button p {
-        color: #49329C !important;
-        -webkit-text-fill-color: #49329C !important;
-        opacity: 1 !important;
-    }
-
-    section[data-testid="stSidebar"]
-    .stButton > button:hover {
-        background: #ECE5FF !important;
-        border-color: #B7A5F2 !important;
-    }
-
-    /* ========================================================
-       DATASET CARD
-       ======================================================== */
-
-    .dataset-card {
-        background: #E9E2FF !important;
-        border: 1px solid #D7C9FF !important;
-        border-radius: 12px;
-        padding: 15px;
-        color: #49329C !important;
-        font-size: 14px;
-        line-height: 1.6;
-    }
-
-    /* ========================================================
-       CHAT TITLE
-       ======================================================== */
-
-    .chat-title {
-        font-size: 28px;
-        font-weight: 800;
-        color: #49329C !important;
-        margin-bottom: 3px;
-    }
-
-    .chat-subtitle {
-        color: #8273A7 !important;
-        font-size: 12px;
-        margin-bottom: 22px;
-    }
-
-    /* ========================================================
-       WELCOME SCREEN
-       ======================================================== */
-
-    .welcome-title {
-        color: #49329C !important;
-        font-size: 30px;
-        font-weight: 800;
-        text-align: center;
-        margin-top: 75px;
-    }
-
-    .welcome-description {
-        color: #8273A7 !important;
-        text-align: center;
-        font-size: 14px;
-        margin-top: 10px;
-        margin-bottom: 30px;
-    }
-
-    /* ========================================================
-       SUGGESTED QUESTIONS
-       ======================================================== */
-
-    [data-testid="stMain"]
-    .stButton > button {
-        background: #FFFFFF !important;
-        color: #6547C3 !important;
-        border: 1px solid #DED5FF !important;
-        border-radius: 12px !important;
-        font-weight: 500 !important;
-        min-height: 44px;
-    }
-
-    [data-testid="stMain"]
-    .stButton > button *,
-    [data-testid="stMain"]
-    .stButton > button p,
-    [data-testid="stMain"]
-    .stButton > button span {
-        color: #6547C3 !important;
-        -webkit-text-fill-color: #6547C3 !important;
-        opacity: 1 !important;
-    }
-
-    [data-testid="stMain"]
-    .stButton > button:hover {
-        background: #EEE8FF !important;
-        border-color: #A998ED !important;
-    }
-
-    /* ========================================================
-       CHAT MESSAGES
-       ======================================================== */
 
     [data-testid="stChatMessage"] {
-        background: transparent !important;
-        border: none !important;
-        padding: 12px 4px;
+        max-width: 100% !important;
     }
 
-    [data-testid="stChatMessage"] p,
-    [data-testid="stChatMessage"] span,
-    [data-testid="stChatMessage"] strong,
-    [data-testid="stChatMessage"] em,
-    [data-testid="stChatMessage"] li,
-    [data-testid="stChatMessage"] h1,
-    [data-testid="stChatMessage"] h2,
-    [data-testid="stChatMessage"] h3 {
-        color: #35285D !important;
-        opacity: 1 !important;
-    }
-
-    /* ========================================================
-       USER AVATAR - PINK BACKGROUND, DARK USER ICON
-       ======================================================== */
-
-    [data-testid="stChatMessageAvatarUser"],
-    [data-testid="stChatMessageAvatarUser"] > div,
-    [data-testid="stChatMessageAvatarUser"]
-    [data-testid="stAvatar"],
-    [data-testid="stChatMessageAvatarUser"]
-    [data-testid="stAvatar"] > div {
-        background: #E99AA6 !important;
-        background-color: #E99AA6 !important;
-        color: #35285D !important;
-        border-radius: 10px !important;
-    }
-
-    [data-testid="stChatMessageAvatarUser"] *,
-    [data-testid="stChatMessageAvatarUser"] svg {
-        color: #35285D !important;
-        stroke: #35285D !important;
-    }
-
-    /* Streamlit's generic avatar element */
-
-    [data-testid="stChatMessage"]
-    [data-testid="stChatMessageAvatarUser"] {
-        background-color: #E99AA6 !important;
-        border-radius: 10px !important;
-    }
-
-    /* Assistant avatar */
-
-    [data-testid="stChatMessageAvatarAssistant"] {
-        background: #F1EAFF !important;
-        color: #49329C !important;
-        border-radius: 10px !important;
-    }
-
-    /* ========================================================
-       LOADING INDICATOR
-       ======================================================== */
-
-    .loading-message {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 8px 2px 12px 2px;
-        color: #49329C !important;
-        font-size: 14px;
-        font-weight: 500;
-    }
-
-    .loading-message span {
-        color: #49329C !important;
-        opacity: 1 !important;
-    }
-
-    .loading-spinner {
-        width: 17px;
-        height: 17px;
-        border: 2px solid #E1D9FF;
-        border-top-color: #7154E8;
-        border-radius: 50%;
-        animation: lalim-spin 0.8s linear infinite;
-        flex-shrink: 0;
-    }
-
-    @keyframes lalim-spin {
-        to {
-            transform: rotate(360deg);
-        }
-    }
-
-    /* ========================================================
-       QUESTION LABEL
-       ======================================================== */
-
-    .question-label {
-        color: #49329C !important;
-        font-size: 14px;
-        font-weight: 800;
-        margin-top: 18px;
-        margin-bottom: 10px;
-    }
-
-    /* ========================================================
-       QUESTION FORM
-       ======================================================== */
-
-    [data-testid="stForm"] {
-        background: #F0EBFF !important;
-        border: 1px solid #E0D6FF !important;
-        border-radius: 18px !important;
-        padding: 14px !important;
-    }
-
-    /* ========================================================
-       INPUT FIELD
-       ======================================================== */
-
-    [data-testid="stForm"]
-    [data-testid="stTextInput"] input {
-        background: #FFFFFF !important;
-        color: #35285D !important;
-        -webkit-text-fill-color: #35285D !important;
-        caret-color: #49329C !important;
-        border: 1px solid #D8CFFF !important;
-        border-radius: 10px !important;
-        outline: none !important;
-        box-shadow: none !important;
-    }
-
-    [data-testid="stForm"]
-    [data-testid="stTextInput"] input::placeholder {
-        color: #9486B2 !important;
-        -webkit-text-fill-color: #9486B2 !important;
-        opacity: 1 !important;
-    }
-
-    [data-testid="stForm"]
-    [data-testid="stTextInput"] input:focus {
-        border-color: #7154E8 !important;
-        outline: none !important;
-        box-shadow: 0 0 0 1px #7154E8 !important;
-    }
-
-    [data-testid="stForm"]
-    [data-testid="stTextInput"]
-    [data-baseweb="input"] {
-        background: #FFFFFF !important;
-        border-color: #D8CFFF !important;
-    }
-
-    [data-testid="stForm"]
-    [data-testid="stTextInput"]
-    [data-baseweb="input"]:focus-within {
-        border-color: #7154E8 !important;
-        box-shadow: 0 0 0 1px #7154E8 !important;
-    }
-
-    /* ========================================================
-       IPADALA BUTTON - PURPLE BACKGROUND, WHITE TEXT
-       ======================================================== */
-
-    [data-testid="stForm"]
-    [data-testid="stFormSubmitButton"] button,
-    [data-testid="stForm"]
-    button[kind="primary"],
-    [data-testid="stForm"]
-    button[type="submit"] {
-        background: #7154E8 !important;
-        background-color: #7154E8 !important;
-        background-image: none !important;
-        border: 1px solid #7154E8 !important;
-        border-radius: 10px !important;
-        color: #FFFFFF !important;
-        -webkit-text-fill-color: #FFFFFF !important;
-        box-shadow: none !important;
-        min-height: 42px;
-    }
-
-    [data-testid="stForm"]
-    [data-testid="stFormSubmitButton"] button:hover,
-    [data-testid="stForm"]
-    button[kind="primary"]:hover,
-    [data-testid="stForm"]
-    button[type="submit"]:hover {
-        background: #6042D8 !important;
-        background-color: #6042D8 !important;
-        border-color: #6042D8 !important;
-        color: #FFFFFF !important;
-    }
-
-    [data-testid="stForm"]
-    [data-testid="stFormSubmitButton"] button:focus,
-    [data-testid="stForm"]
-    [data-testid="stFormSubmitButton"] button:active,
-    [data-testid="stForm"]
-    button[kind="primary"]:focus,
-    [data-testid="stForm"]
-    button[kind="primary"]:active {
-        background: #7154E8 !important;
-        background-color: #7154E8 !important;
-        border-color: #7154E8 !important;
-        color: #FFFFFF !important;
-        box-shadow: none !important;
-    }
-
-    /* Force WHITE text on every child element */
-
-    [data-testid="stForm"]
-    [data-testid="stFormSubmitButton"] button *,
-    [data-testid="stForm"]
-    [data-testid="stFormSubmitButton"] button p,
-    [data-testid="stForm"]
-    [data-testid="stFormSubmitButton"] button span,
-    [data-testid="stForm"]
-    button[kind="primary"] *,
-    [data-testid="stForm"]
-    button[type="submit"] * {
-        color: #FFFFFF !important;
-        -webkit-text-fill-color: #FFFFFF !important;
-        opacity: 1 !important;
-    }
-
-    /* Override generic main-area button text styling */
-
-    [data-testid="stMain"]
-    [data-testid="stForm"]
-    [data-testid="stFormSubmitButton"] button *,
-    [data-testid="stMain"]
-    [data-testid="stForm"]
-    [data-testid="stFormSubmitButton"] button p,
-    [data-testid="stMain"]
-    [data-testid="stForm"]
-    [data-testid="stFormSubmitButton"] button span {
-        color: #FFFFFF !important;
-        -webkit-text-fill-color: #FFFFFF !important;
-        opacity: 1 !important;
-    }
-
-    /* ========================================================
-       RETRIEVED SOURCES
-       ======================================================== */
-
-    [data-testid="stExpander"] {
-        background: #F8F5FF !important;
-        border: 1px solid #DED5FF !important;
-        border-radius: 12px !important;
-    }
-
-    [data-testid="stExpander"] summary,
-    [data-testid="stExpander"] summary *,
-    [data-testid="stExpander"] p,
-    [data-testid="stExpander"] span {
-        color: #49329C !important;
-    }
-
-    /* ========================================================
-       FOOTER
-       ======================================================== */
-
-    .app-footer {
-        text-align: center;
-        color: #8D80AC !important;
-        font-size: 11px;
+    .welcome {
         margin-top: 35px;
     }
 
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
-# GROQ API KEY
-# ============================================================
-
-def get_groq_api_key():
-    key = os.getenv("GROQ_API_KEY", "").strip()
-
-    if key:
-        return key
-
-    try:
-        key = st.secrets.get("GROQ_API_KEY", "")
-        return str(key).strip()
-    except Exception:
-        return ""
-
-
-# ============================================================
-# LOADING INDICATOR
-# ============================================================
-
-def show_loading(placeholder, message):
-    placeholder.markdown(
-        f"""
-        <div class="loading-message">
-            <div class="loading-spinner"></div>
-            <span>{message}</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ============================================================
-# CHATBOT RESPONSE
-# ============================================================
-
-def generate_chatbot_response(
-    question,
-    loading_placeholder,
-):
-    api_key = get_groq_api_key()
-
-    if not api_key:
-        logger.error("GROQ_API_KEY is missing.")
-
-        return {
-            "answer": ERROR_MESSAGE,
-            "retrieved": [],
-        }
-
-    result_holder = {}
-    error_holder = {}
-
-    def run_backend():
-        try:
-            result_holder["data"] = rag_query(
-                question,
-                api_key=api_key,
-            )
-        except Exception as exc:
-            error_holder["error"] = exc
-
-    worker = threading.Thread(
-        target=run_backend,
-        daemon=True,
-    )
-
-    show_loading(
-        loading_placeholder,
-        "Hinahanap ang kahulugan...",
-    )
-
-    start_time = time.monotonic()
-    worker.start()
-
-    current_stage = "retrieval"
-
-    while worker.is_alive():
-        elapsed = time.monotonic() - start_time
-
-        if elapsed >= 3 and current_stage == "retrieval":
-            current_stage = "generation"
-
-            show_loading(
-                loading_placeholder,
-                "Binubuo ang sagot...",
-            )
-
-        worker.join(timeout=0.2)
-
-    loading_placeholder.empty()
-
-    if "error" in error_holder:
-        logger.error(
-            "LalimSalita request failed: %s",
-            error_holder["error"],
-        )
-
-        return {
-            "answer": ERROR_MESSAGE,
-            "retrieved": [],
-        }
-
-    result = result_holder.get("data") or {}
-
-    return {
-        "answer": result.get("answer", FALLBACK),
-        "retrieved": result.get("retrieved", []),
+    .welcome h2 {
+        font-size: 24px;
     }
+}
 
-
-# ============================================================
-# DISPLAY CHAT MESSAGE
-# ============================================================
-
-def display_message(message):
-    role = message["role"]
-
-    # IMPORTANT:
-    # Use Streamlit's built-in user avatar rather than an emoji.
-    # This allows the CSS to apply the pink background.
-    if role == "assistant":
-        avatar = (
-            str(LOGO_PATH)
-            if LOGO_PATH.exists()
-            else "📖"
-        )
-        chat_role = "assistant"
-    else:
-        avatar = None
-        chat_role = "user"
-
-    with st.chat_message(
-        chat_role,
-        avatar=avatar,
-    ):
-        st.markdown(message["content"])
-
-        retrieved = message.get("retrieved", [])
-
-        if (
-            role == "assistant"
-            and retrieved
-            and message["content"].strip() != FALLBACK
-        ):
-            with st.expander(
-                "Retrieved source chunks",
-                expanded=False,
-            ):
-                for doc in retrieved:
-                    st.markdown(
-                        f"**Rank {doc.get('rank', '?')} "
-                        f"— PDF Page {doc.get('page', '?')}**"
-                    )
-
-                    distance = doc.get("distance")
-
-                    if isinstance(distance, (int, float)):
-                        st.caption(
-                            f"Cosine distance: {distance:.4f}"
-                        )
-
-                    st.write(
-                        doc.get("text", "")
-                    )
+</style>
+""", unsafe_allow_html=True)
 
 
 # ============================================================
@@ -900,27 +612,15 @@ def display_message(message):
 
 with st.sidebar:
 
-    if LOGO_PATH.exists():
-        st.image(
-            str(LOGO_PATH),
-            width=52,
-        )
-    else:
-        st.markdown("📖")
-
     st.markdown(
         """
-        <div class="brand-title">
-            LalimSalita
-        </div>
-        <div class="brand-subtitle">
-            Kasama mo sa pag-unawa ng Filipino
+        <div class="sidebar-brand">
+            <h2>📖 LalimSalita</h2>
+            <p>Kasama mo sa pag-unawa ng Filipino</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
-
-    st.divider()
 
     st.markdown(
         '<div class="sidebar-heading">PAG-AARAL</div>',
@@ -928,255 +628,387 @@ with st.sidebar:
     )
 
     if st.button(
-        "Bagong usapan",
+        "＋ Bagong usapan",
         use_container_width=True,
         key="new_conversation",
     ):
-        st.session_state.conversation_id = (
-            create_conversation()
-        )
-        st.session_state.pending_question = None
+        start_new_conversation()
         st.rerun()
 
     st.markdown(
-        '<div class="sidebar-heading">MGA NAKARAANG USAPAN</div>',
+        '<div class="sidebar-heading">'
+        'MGA NAKARAANG USAPAN'
+        '</div>',
         unsafe_allow_html=True,
     )
 
-    for conversation in list_conversations():
-        if st.button(
-            conversation["title"],
-            key=f"chat_{conversation['id']}",
-            use_container_width=True,
-        ):
-            st.session_state.conversation_id = (
-                conversation["id"]
-            )
-            st.session_state.pending_question = None
-            st.rerun()
+    conversations = list_conversations()
 
-    st.markdown(
-        '<div class="sidebar-heading">MGA SETTING</div>',
-        unsafe_allow_html=True,
-    )
+    if not conversations:
+        st.caption("Wala pang nakaraang usapan.")
 
-    with st.expander("Retrieval settings"):
-        st.markdown(
-            """
-            **Chunk size:** 500 characters
+    for conversation in conversations:
 
-            **Chunk overlap:** 100 characters
+        conversation_id = conversation["id"]
+        title = conversation["title"]
 
-            **Top-K:** 3
-
-            **Retrieval:** Hybrid exact-match
-            and semantic search
-
-            **Embedding model:** Quantized ONNX
-            """
+        col_title, col_delete = st.columns(
+            [5, 1],
+            gap="small",
         )
 
-    st.markdown(
-        '<div class="sidebar-heading">TUNGKOL SA DATASET</div>',
-        unsafe_allow_html=True,
-    )
+        with col_title:
+            display_title = (
+                title[:32] + "..."
+                if len(title) > 35
+                else title
+            )
 
-    st.markdown(
-        """
-        <div class="dataset-card">
-            Ang mga sagot ay nakabatay sa
-            Talasalitaan Aralin 1–29.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ============================================================
-# MAIN CHAT INTERFACE
-# ============================================================
-
-st.markdown(
-    """
-    <div class="chat-title">
-        LalimSalita
-    </div>
-    <div class="chat-subtitle">
-        Filipino Vocabulary Learning Companion
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.divider()
-
-conversation_id = st.session_state.conversation_id
-messages = load_messages(conversation_id)
-
-
-# ============================================================
-# WELCOME SCREEN
-# ============================================================
-
-if not messages:
-
-    st.markdown(
-        """
-        <div class="welcome-title">
-            Ano ang gusto mong malaman?
-        </div>
-
-        <div class="welcome-description">
-            Magtanong tungkol sa kahulugan at
-            konteksto ng mga salitang Filipino.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    examples = [
-        "Ano ang kahulugan ng hilahil?",
-        "Ano ang ibig sabihin ng dalamhati?",
-        "Ano ang kahulugan ng nagpipighati?",
-    ]
-
-    cols = st.columns(3)
-
-    for col, example in zip(cols, examples):
-        with col:
             if st.button(
-                example,
+                display_title,
+                key=f"open_{conversation_id}",
                 use_container_width=True,
+                help=title,
             ):
-                st.session_state.pending_question = (
-                    example
-                )
+                open_conversation(conversation_id)
                 st.rerun()
 
+        with col_delete:
+            if st.button(
+                "⋮",
+                key=f"menu_{conversation_id}",
+                help="Mga opsyon sa usapan",
+                use_container_width=True,
+            ):
+                if (
+                    st.session_state.delete_target
+                    == conversation_id
+                ):
+                    st.session_state.delete_target = None
+                else:
+                    request_delete(conversation_id)
+
+                st.rerun()
+
+        # Delete confirmation
+        if (
+            st.session_state.delete_target
+            == conversation_id
+        ):
+            with st.container(border=True):
+                st.markdown(
+                    "**Burahin ang usapang ito?**"
+                )
+
+                st.caption(
+                    "Hindi na maibabalik ang mga mensahe."
+                )
+
+                yes_col, no_col = st.columns(2)
+
+                with yes_col:
+                    if st.button(
+                        "Burahin",
+                        key=f"confirm_{conversation_id}",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        confirm_delete()
+                        st.rerun()
+
+                with no_col:
+                    if st.button(
+                        "Kanselahin",
+                        key=f"cancel_{conversation_id}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.delete_target = None
+                        st.rerun()
+
 
 # ============================================================
-# DISPLAY CONVERSATION
-# ============================================================
-
-for message in messages:
-    display_message(message)
-
-
-# ============================================================
-# LOADING AREA ABOVE INPUT
-# ============================================================
-
-loading_placeholder = st.empty()
-
-
-# ============================================================
-# QUESTION INPUT
+# MAIN HEADER
 # ============================================================
 
 st.markdown(
     """
-    <div class="question-label">
-        Magtanong sa LalimSalita
+    <div class="chat-brand">
+        <h1>LalimSalita</h1>
+        <p>Filipino Vocabulary Learning Companion</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-with st.form(
-    key="question_form",
-    clear_on_submit=True,
-    enter_to_submit=True,
-):
 
-    input_col, button_col = st.columns(
-        [5, 1],
-        gap="small",
-        vertical_alignment="bottom",
+# ============================================================
+# RESPONSE HANDLING
+# ============================================================
+
+def normalize_response(result):
+    """
+    Supports a backend returning either:
+    - a string
+    - a dictionary containing answer/retrieved
+    """
+
+    if isinstance(result, str):
+        return result, []
+
+    if isinstance(result, dict):
+        answer = (
+            result.get("answer")
+            or result.get("response")
+            or result.get("text")
+            or FALLBACK
+        )
+
+        retrieved = (
+            result.get("retrieved")
+            or result.get("sources")
+            or []
+        )
+
+        return str(answer), retrieved
+
+    return FALLBACK, []
+
+
+def display_sources(retrieved):
+    if not retrieved:
+        return
+
+    with st.expander(
+        "Retrieved source chunks",
+        expanded=False,
+    ):
+        for index, item in enumerate(
+            retrieved,
+            start=1,
+        ):
+            if not isinstance(item, dict):
+                st.write(str(item))
+                continue
+
+            page = item.get("page", "N/A")
+            match_type = item.get(
+                "match_type",
+                "semantic",
+            )
+            text = item.get("text", "")
+
+            st.markdown(
+                f"**Source {index} — "
+                f"Page {page}**"
+            )
+
+            st.caption(
+                f"Retrieval: {match_type}"
+            )
+
+            st.write(text)
+
+            if index < len(retrieved):
+                st.divider()
+
+
+def display_message(message):
+    role = message["role"]
+
+    avatar = "👤" if role == "user" else "📖"
+
+    with st.chat_message(
+        role,
+        avatar=avatar,
+    ):
+        st.markdown(message["content"])
+
+        if role == "assistant":
+            display_sources(
+                message.get("retrieved", [])
+            )
+
+
+def generate_answer(question):
+    api_key = (
+        os.getenv("GROQ_API_KEY")
+        or st.secrets.get("GROQ_API_KEY", "")
     )
 
-    with input_col:
-        question_input = st.text_input(
-            "Iyong tanong",
-            placeholder="I-type ang iyong tanong dito...",
-            label_visibility="collapsed",
+    if not api_key:
+        logger.error("GROQ_API_KEY is missing.")
+        return (
+            "Pansamantalang hindi available ang "
+            "serbisyo ng chatbot. "
+            "Pakisubukang muli.",
+            [],
         )
-
-    with button_col:
-        submitted = st.form_submit_button(
-            "Ipadala",
-            type="primary",
-            use_container_width=True,
-        )
-
-
-# ============================================================
-# PROCESS QUESTION
-# ============================================================
-
-question = None
-
-if st.session_state.pending_question:
-    question = st.session_state.pending_question
-    st.session_state.pending_question = None
-
-elif submitted:
-    question = question_input.strip()
-
-
-if question and question.strip():
-
-    question = question.strip()
 
     try:
+        result = rag_query(
+            question,
+            api_key=api_key,
+        )
+
+        return normalize_response(result)
+
+    except Exception:
+        logger.exception(
+            "Chatbot request failed."
+        )
+
+        return (
+            "May problema sa pagkuha ng sagot. "
+            "Pakisubukang muli.",
+            [],
+        )
+
+
+def process_question(question):
+    question = (question or "").strip()
+
+    if not question:
+        return
+
+    conversation_id = (
+        st.session_state.conversation_id
+    )
+
+    if not conversation_id:
+        conversation_id = create_conversation()
+        st.session_state.conversation_id = (
+            conversation_id
+        )
+
+    previous_messages = load_messages(
+        conversation_id
+    )
+
+    # Set title based on first user question.
+    if not previous_messages:
         update_conversation_title(
             conversation_id,
             question,
         )
 
-        save_message(
-            conversation_id,
-            "user",
-            question,
-        )
+    save_message(
+        conversation_id,
+        "user",
+        question,
+    )
 
-        result = generate_chatbot_response(
-            question,
-            loading_placeholder,
-        )
+    # Display question immediately.
+    display_message({
+        "role": "user",
+        "content": question,
+        "retrieved": [],
+    })
 
-        save_message(
-            conversation_id,
-            "assistant",
-            result["answer"],
-            result.get("retrieved", []),
-        )
+    # Generate answer with progress indicator.
+    with st.chat_message(
+        "assistant",
+        avatar="📖",
+    ):
+        with st.status(
+            "Hinahanap ang kahulugan...",
+            expanded=False,
+        ) as status:
 
-    except Exception:
-        logger.exception(
-            "Unexpected chatbot error."
-        )
+            status.write(
+                "Sinusuri ang mga kaugnay na "
+                "salita sa talasalitaan..."
+            )
 
-        loading_placeholder.empty()
+            answer, retrieved = (
+                generate_answer(question)
+            )
 
-        save_message(
-            conversation_id,
-            "assistant",
-            ERROR_MESSAGE,
-        )
+            status.update(
+                label="Tapos na ang paghahanap.",
+                state="complete",
+                expanded=False,
+            )
+
+        st.markdown(answer)
+        display_sources(retrieved)
+
+    save_message(
+        conversation_id,
+        "assistant",
+        answer,
+        retrieved,
+    )
 
     st.rerun()
 
 
 # ============================================================
-# FOOTER
+# CONVERSATION DISPLAY
 # ============================================================
 
-st.markdown(
-    """
-    <div class="app-footer">
-        LalimSalita · Filipino Vocabulary
-        Learning Companion
-    </div>
-    """,
-    unsafe_allow_html=True,
+current_id = st.session_state.conversation_id
+
+messages = load_messages(current_id)
+
+if messages:
+
+    for message in messages:
+        display_message(message)
+
+else:
+
+    st.markdown(
+        """
+        <div class="welcome">
+            <h2>Ano ang gusto mong malaman?</h2>
+            <p>
+                Magtanong tungkol sa kahulugan at
+                konteksto ng mga salitang Filipino.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    cols = st.columns(3, gap="small")
+
+    for index, suggested in enumerate(
+        WELCOME_QUESTIONS
+    ):
+        with cols[index]:
+
+            label = (
+                suggested[:29] + "..."
+                if len(suggested) > 32
+                else suggested
+            )
+
+            if st.button(
+                label,
+                key=f"suggested_{index}",
+                use_container_width=True,
+                help=suggested,
+            ):
+                st.session_state.pending_question = (
+                    suggested
+                )
+                st.rerun()
+
+
+# ============================================================
+# FIXED BOTTOM CHAT INPUT
+# ============================================================
+
+question = st.chat_input(
+    "I-type ang iyong tanong dito...",
+    key="lalimsalita_chat_input",
 )
+
+pending = st.session_state.pending_question
+
+if pending:
+    st.session_state.pending_question = None
+    process_question(pending)
+
+elif question:
+    process_question(question)
